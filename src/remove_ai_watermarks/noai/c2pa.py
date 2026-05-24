@@ -196,9 +196,12 @@ def _parse_c2pa_chunk(chunk_data: bytes, c2pa_info: dict[str, Any]) -> None:
 
     # Claim generator and spec version: read the CBOR text-string values
     # directly (regex byte-grabbing produced artifacts like ``fGPT-4o``).
-    if generator := _cbor_text_after(chunk_data, b"name"):
+    # Guard with isprintable(): on some manifests (e.g. Microsoft Designer) the
+    # first ``name`` key precedes a binary field (a hash), not the generator
+    # string, which would otherwise surface as control-char garbage.
+    if (generator := _cbor_text_after(chunk_data, b"name")) and generator.isprintable():
         c2pa_info["claim_generator"] = generator
-    if spec := _cbor_text_after(chunk_data, b"specVersion"):
+    if (spec := _cbor_text_after(chunk_data, b"specVersion")) and spec.isprintable():
         c2pa_info["c2pa_spec"] = spec
 
     # Find actions

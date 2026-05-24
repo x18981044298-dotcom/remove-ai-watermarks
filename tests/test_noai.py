@@ -9,6 +9,7 @@ import pytest
 
 from remove_ai_watermarks.noai.c2pa import (
     _cbor_text_after,
+    _parse_c2pa_chunk,
     extract_c2pa_chunk,
     extract_c2pa_info,
     has_c2pa_metadata,
@@ -230,6 +231,32 @@ class TestSynthIDVerdict:
 
     def test_multiple_vendors(self):
         assert "Google LLC, OpenAI" in synthid_verdict("Google LLC, OpenAI")
+
+
+class TestParseChunkGuards:
+    """_parse_c2pa_chunk rejects non-printable claim_generator garbage.
+
+    On some manifests (observed: Microsoft Designer) the first ``name`` key
+    precedes a binary hash field, not the generator string. The clean issuer +
+    SynthID verdict must still come through.
+    """
+
+    def test_clean_generator_kept(self):
+        # "name" + CBOR text-string (head 0x69 = 0x60+9) "gpt-image"
+        chunk = b"...name" + bytes([0x69]) + b"gpt-image" + b"OpenAI trainedAlgorithmicMedia"
+        info: dict = {}
+        _parse_c2pa_chunk(chunk, info)
+        assert info["claim_generator"] == "gpt-image"
+        assert "OpenAI" in info["issuer"]
+        assert "synthid_watermark" in info  # OpenAI + trainedAlgorithmicMedia
+
+    def test_nonprintable_generator_dropped(self):
+        # "name" + CBOR string (head 0x64 = len 4) with a control byte -> garbage
+        chunk = b"...name" + bytes([0x64]) + b"\x81abc" + b"OpenAI trainedAlgorithmicMedia"
+        info: dict = {}
+        _parse_c2pa_chunk(chunk, info)
+        assert "claim_generator" not in info  # control-char garbage rejected
+        assert "OpenAI" in info["issuer"]  # issuer byte-search still robust
 
 
 # ── ISOBMFF (AVIF / HEIF / JPEG-XL container stripping) ──────────────
