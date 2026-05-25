@@ -317,3 +317,35 @@ class TestIdentifyInvisibleWatermark:
     def test_check_invisible_false_skips(self, tmp_path: Path):
         r = identify(self._sdxl_watermarked(tmp_path), check_visible=False, check_invisible=False)
         assert not any(s.name == "invisible_watermark" for s in r.signals)
+
+
+class TestIdentifyAIGC:
+    """China TC260 AIGC label is detected and attributed (e.g. Doubao)."""
+
+    def _aigc_png(self, tmp_path: Path) -> Path:
+        from PIL import Image
+
+        p = tmp_path / "doubao.png"
+        Image.new("RGB", (32, 32)).save(p)
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+            'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description xmlns:TC260="http://www.tc260.org.cn/ns/AIGC/1.0/">'
+            "<TC260:AIGC>{&quot;Label&quot;:&quot;1&quot;,&quot;ContentProducer&quot;:&quot;BYTEDANCE001&quot;}"
+            "</TC260:AIGC></rdf:Description></rdf:RDF></x:xmpmeta>"
+        )
+        with open(p, "ab") as f:
+            f.write(xmp.encode())
+        return p
+
+    def test_aigc_detected(self, tmp_path: Path):
+        r = identify(self._aigc_png(tmp_path), check_visible=False)
+        assert r.is_ai_generated is True
+        assert r.platform is not None
+        assert "AIGC" in r.platform or "TC260" in r.platform
+        assert any("AIGC" in w for w in r.watermarks)
+
+    def test_aigc_signal_carries_producer(self, tmp_path: Path):
+        r = identify(self._aigc_png(tmp_path), check_visible=False)
+        sig = next(s for s in r.signals if s.name == "aigc")
+        assert "BYTEDANCE001" in sig.detail

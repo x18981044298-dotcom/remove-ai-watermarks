@@ -24,8 +24,10 @@ from typing import TYPE_CHECKING
 
 from remove_ai_watermarks.metadata import (
     AI_METADATA_KEYS,
+    AIGC_MARKERS,
     C2PA_UUID,
     IPTC_AI_MARKERS,
+    aigc_label,
     exif_generator,
     get_ai_metadata,
 )
@@ -219,6 +221,15 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         if platform is None:
             platform = "Made-with-AI tag (e.g. Meta AI); platform not specified"
 
+    # ── China TC260 AIGC label (Doubao and other China-served gens) ──
+    aigc = any(m in head for m in AIGC_MARKERS)
+    if aigc:
+        producer = (aigc_label(image_path) or {}).get("ContentProducer", "")
+        signals.append(Signal("aigc", f"TC260 AIGC label{f' (producer {producer})' if producer else ''}", "high"))
+        watermarks.append("China AIGC label (TC260 standard)")
+        if platform is None:
+            platform = "China AIGC-labeled generator (TC260; e.g. Doubao)"
+
     # ── Local diffusion parameters (Stable Diffusion / ComfyUI) ──────
     local_keys = sorted(k for k in meta if k.lower() in _LOCAL_GEN_KEYS)
     if local_keys:
@@ -247,7 +258,9 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
     # ── Verdict so far (metadata + embedded watermark) ──────────────
     invisible_wm = any(s.name == "invisible_watermark" for s in signals)
     exif_gen = any(s.name == "exif_generator" for s in signals)
-    ai_from_metadata = bool((has_c2pa and (c2pa_is_ai or synthid)) or iptc or local_keys or invisible_wm or exif_gen)
+    ai_from_metadata = bool(
+        (has_c2pa and (c2pa_is_ai or synthid)) or iptc or aigc or local_keys or invisible_wm or exif_gen
+    )
 
     # ── Visible Gemini sparkle (fallback for stripped-metadata case) ─
     if check_visible and (conf := _visible_sparkle(image_path)) is not None and conf >= _SPARKLE_THRESHOLD:

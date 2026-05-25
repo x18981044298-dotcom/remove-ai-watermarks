@@ -390,3 +390,46 @@ class TestExifGenerator:
 
     def test_clean_image_is_none(self, tmp_clean_png: Path):
         assert exif_generator(tmp_clean_png) is None
+
+
+class TestAIGCLabel:
+    """China TC260 AIGC labeling (Doubao and other China-served generators)."""
+
+    def _aigc_png(self, tmp_path: Path, label: str = "1", producer: str = "TESTPRODUCER001") -> Path:
+        from remove_ai_watermarks.metadata import aigc_label  # noqa: F401  (import-time guard)
+
+        p = tmp_path / "doubao.png"
+        Image.new("RGB", (32, 32)).save(p)
+        # XMP is HTML-entity encoded in real files; aigc_label must unescape it.
+        xmp = (
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+            'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" '
+            'xmlns:TC260="http://www.tc260.org.cn/ns/AIGC/1.0/"><TC260:AIGC>'
+            f"{{&quot;Label&quot;:&quot;{label}&quot;,&quot;ContentProducer&quot;:&quot;{producer}&quot;}}"
+            "</TC260:AIGC></rdf:Description></rdf:RDF></x:xmpmeta>"
+        )
+        with open(p, "ab") as f:
+            f.write(xmp.encode())
+        return p
+
+    def test_parses_label_and_producer(self, tmp_path: Path):
+        from remove_ai_watermarks.metadata import aigc_label
+
+        info = aigc_label(self._aigc_png(tmp_path))
+        assert info is not None
+        assert info["Label"] == "1"
+        assert info["ContentProducer"] == "TESTPRODUCER001"
+
+    def test_none_when_absent(self, tmp_clean_png):
+        from remove_ai_watermarks.metadata import aigc_label
+
+        assert aigc_label(tmp_clean_png) is None
+
+    def test_has_ai_metadata_detects_aigc(self, tmp_path: Path):
+        assert has_ai_metadata(self._aigc_png(tmp_path))
+
+    def test_get_ai_metadata_surfaces_aigc(self, tmp_path: Path):
+        meta = get_ai_metadata(self._aigc_png(tmp_path))
+        assert "aigc_label" in meta
+        assert "TC260" in meta["aigc_label"]

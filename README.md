@@ -38,12 +38,13 @@ Strips SynthID, C2PA Content Credentials, EXIF/XMP "Made with AI" labels, and vi
 | **Microsoft Designer / Bing Image Creator** | — | ✅ SynthID via DALL-E backend (Designer) | ✅ C2PA (Bing runs MAI-Image, signed "Microsoft") | Metadata strip |
 | **Midjourney** | — | — | ✅ EXIF + XMP (prompt, model, seed) | Metadata strip |
 | **Meta AI** | — | — | ✅ IPTC "Made with AI" (digitalSourceType) | Metadata strip (removes the label) |
+| **Doubao** (ByteDance) / China AIGC generators | — | — | ✅ TC260 `<TC260:AIGC>` XMP label (China's mandatory AI labeling) | Metadata strip |
 | **StableSignature** (Meta) | — | ✅ In-model watermark | — | Diffusion regeneration |
 | **TreeRing** | — | ✅ Latent space watermark | — | Diffusion regeneration |
 
 > Visible watermarks (logo overlays) are currently used only by Google Gemini / Nano Banana. Other services rely on invisible watermarks and/or metadata. Our diffusion-based regeneration works against any invisible watermark in pixel or frequency domain.
 
-> **Detection:** `remove-ai-watermarks identify <image>` reports the origin platform and watermark inventory for all the signals above — C2PA issuer, IPTC "Made with AI", embedded generation params, EXIF/XMP generator tags, the SynthID metadata proxy, the visible sparkle, and (with the `[detect]` extra) the open SD/SDXL/FLUX invisible watermark. The SynthID *pixel* watermark has no local decoder, so it is reported as a metadata proxy only.
+> **Detection:** `remove-ai-watermarks identify <image>` reports the origin platform and watermark inventory for all the signals above — C2PA issuer, IPTC "Made with AI", the China TC260 AIGC label, embedded generation params, EXIF/XMP generator tags, the SynthID metadata proxy, the visible sparkle, and (with the `[detect]` extra) the open SD/SDXL/FLUX invisible watermark. The SynthID *pixel* watermark has no local decoder, so it is reported as a metadata proxy only.
 
 ## How it works
 

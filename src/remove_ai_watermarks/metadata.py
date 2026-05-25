@@ -73,6 +73,17 @@ IPTC_AI_MARKERS: tuple[bytes, ...] = (
     b"compositeWithTrainedAlgorithmicMedia",
 )
 
+# China's mandatory AI-content labeling (TC260, the national cybersecurity
+# standards committee). AI generators serving China embed an XMP block in the
+# TC260 namespace -- ``<TC260:AIGC>{"Label":"1",...}``. Doubao (ByteDance) uses
+# this; the same standard is mandatory for Jimeng, Kling, Qwen, Ernie, etc.,
+# so the marker covers the whole China-AIGC-labeled ecosystem. Container-
+# agnostic (XMP is text), so a raw-byte scan catches it in PNG/JPEG/etc.
+AIGC_MARKERS: tuple[bytes, ...] = (
+    b"tc260.org.cn/ns/AIGC",
+    b"TC260:AIGC",
+)
+
 STANDARD_METADATA_KEYS: frozenset[str] = frozenset(
     [
         "Author",
@@ -139,7 +150,33 @@ def has_ai_metadata(image_path: Path) -> bool:
         return True
     if C2PA_UUID in data:
         return True
+    if any(marker in data for marker in AIGC_MARKERS):
+        return True
     return any(marker in data for marker in IPTC_AI_MARKERS)
+
+
+def aigc_label(image_path: Path) -> dict[str, str] | None:
+    """Parse a China TC260 ``<TC260:AIGC>`` AI-labeling block, if present.
+
+    Returns the decoded JSON (e.g. ``{"Label": "1", "ContentProducer": ...}``)
+    or None. The block is XMP text (HTML-entity encoded), so it is found by a
+    container-agnostic raw-byte scan and works for PNG/JPEG/WebP alike.
+    """
+    import html
+    import json
+    import re
+
+    with open(image_path, "rb") as f:
+        data = f.read(1024 * 1024)
+    match = re.search(rb"<TC260:AIGC>(.*?)</TC260:AIGC>", data, re.DOTALL)
+    if not match:
+        return None
+    raw = html.unescape(match.group(1).decode("utf-8", "replace"))
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else None
 
 
 def synthid_source(image_path: Path) -> str | None:
@@ -286,6 +323,11 @@ def get_ai_metadata(image_path: Path) -> dict[str, str]:
     # fall back to the format-agnostic source check for the SynthID verdict.
     if "synthid_watermark" not in result and (vendor := synthid_source(image_path)):
         result.setdefault("synthid_watermark", synthid_verdict(vendor))
+
+    # China TC260 AI-content label (Doubao and other China-served generators).
+    if aigc := aigc_label(image_path):
+        producer = aigc.get("ContentProducer", "")
+        result["aigc_label"] = f"China AIGC label (TC260){f'; producer {producer}' if producer else ''}"
     return result
 
 

@@ -28,8 +28,11 @@ gpu = [
 ]
 # Open invisible-watermark (imwatermark) decoder for detecting the DWT-DCT
 # watermarks embedded by Stable Diffusion / SDXL / FLUX. Optional because it
-# pulls non-headless opencv; identify() guards the import and skips the signal
-# when absent.
+# pulls non-headless opencv AND torch (invisible-watermark declares torch a hard
+# dependency, and WatermarkDecoder eagerly imports rivaGan -> torch at import
+# time, so the dwtDct-only detect path still needs torch present even though it
+# never runs on GPU). So `detect` alone pulls torch -- no need to add `gpu` for
+# detection. identify() guards the import and skips the signal when absent.
 detect = [
     "invisible-watermark>=0.2.0",
 ]
