@@ -14,7 +14,7 @@ You are a **principal Python engineer** maintaining a CLI tool and library for r
 - `bash maintain.sh` — uv-outdated, uv-secure, ruff check/fix, ruff format, pyright, pytest -n auto
 - `maintain.sh` may not finish fully green (pre-existing, not per-change): strict pyright carries debt in `remove_ai_metadata` / `cli.py` (untyped piexif/PIL/click/rich). (`uv-secure` is clean since idna was bumped 3.11 -> 3.16, fixing GHSA-65pc-fj4g-8rjx.) To gate a change, run `uv run ruff check`, `uv run pyright <changed files>`, `uv run pytest` directly.
 - Run `uv run` from the repo root — from another cwd it falls back to a bare env without numpy/cv2/torch.
-- Metadata/C2PA tests assert against real committed fixtures in `data/samples/` (`chatgpt-*.png` = OpenAI C2PA, `firefly-1.png` = Adobe, `not-ai-*` = clean); synthetic byte blobs cover the JPEG/ISOBMFF format paths.
+- Metadata/C2PA tests assert against real committed fixtures in `data/samples/` (`chatgpt-*.png` = OpenAI C2PA, `firefly-1.png` = Adobe, `mj-*` = Midjourney IPTC, `doubao-1.png` = ByteDance Doubao with the China TC260 `<TC260:AIGC>` XMP label **and** a visible "豆包AI生成" text mark bottom-right, `not-ai-*` = clean); synthetic byte blobs cover the JPEG/ISOBMFF format paths.
 - SynthID reference corpus: `scripts/synthid_corpus.py` ingests labeled images into `data/synthid_corpus/` (`manifest.csv` tracked, `images/` gitignored); see its README for the collection protocol and verification oracles.
 
 ## Configuration

@@ -433,3 +433,20 @@ class TestAIGCLabel:
         meta = get_ai_metadata(self._aigc_png(tmp_path))
         assert "aigc_label" in meta
         assert "TC260" in meta["aigc_label"]
+
+
+@pytest.mark.skipif(not (SAMPLES_DIR / "doubao-1.png").exists(), reason="doubao sample not present")
+class TestAIGCRealSample:
+    """Real Doubao (ByteDance) sample carries the China TC260 AIGC XMP label."""
+
+    def test_doubao_aigc_label(self):
+        from remove_ai_watermarks.metadata import aigc_label
+
+        info = aigc_label(SAMPLES_DIR / "doubao-1.png")
+        assert info is not None
+        assert info["Label"] == "1"
+        assert info["ContentProducer"]  # ByteDance producer code present
+
+    def test_doubao_detected_as_ai(self):
+        assert has_ai_metadata(SAMPLES_DIR / "doubao-1.png")
+        assert "aigc_label" in get_ai_metadata(SAMPLES_DIR / "doubao-1.png")
