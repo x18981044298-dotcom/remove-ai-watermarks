@@ -145,6 +145,11 @@ _DEVICE_C2PA_PLATFORM: tuple[tuple[bytes, str], ...] = (
     (b"Leica Camera", "Leica (camera, C2PA capture)"),
     (b"NIKON", "Nikon (camera, C2PA capture)"),
     (b"Pixel Camera", "Google Pixel (camera, C2PA capture)"),
+    # Sony uses its own ``sony.*`` C2PA assertion namespace (sony.sig / sony.cert);
+    # match that, NOT bare "Sony" (which is an EXIF Make on countless photos).
+    # Verified on a real Sony-signed file (Sony PXW-Z300, signer "Sony Corporation").
+    (b"sony.sig", "Sony (camera, C2PA capture)"),
+    (b"sony.cert", "Sony (camera, C2PA capture)"),
     # "Truepic_Lens" (from the Lens SDK claim generator), NOT bare "Truepic" --
     # Truepic is a C2PA signing authority whose name appears in the trust chain
     # of unrelated manifests (e.g. OpenAI), so the bare token mis-attributes.

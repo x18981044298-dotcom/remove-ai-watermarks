@@ -360,6 +360,15 @@ class TestIdentifyC2paDevice:
         assert r.platform == "Google Pixel (camera, C2PA capture)"
         assert r.is_ai_generated is None  # camera capture, not AI
 
+    def test_sony_namespace_beats_bare_make(self, tmp_path: Path):
+        # Sony's own C2PA assertion namespace (sony.sig), not the bare "Sony"
+        # EXIF Make that appears on ordinary photos.
+        blob = b"\xff\xd8\xff\xe1 c2pa.claim jumbf Adobe Sony sony.sig.v1_1 \xff\xd9"
+        p = tmp_path / "sony_like.jpg"
+        p.write_bytes(blob)
+        r = identify(p, check_visible=False, check_invisible=False)
+        assert r.platform == "Sony (camera, C2PA capture)"
+
 
 # ── Open invisible watermark (SD/SDXL/FLUX) integration ─────────────
 
