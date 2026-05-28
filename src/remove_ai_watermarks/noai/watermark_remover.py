@@ -387,7 +387,7 @@ class WatermarkRemover:
         num_inference_steps: int = 50,
         guidance_scale: float | None = None,
         seed: int | None = None,
-        protect_text: bool = False,
+        protect_text: bool = True,
     ) -> Path:
         """Remove watermark from an image using regeneration attack.
 
@@ -398,8 +398,10 @@ class WatermarkRemover:
             num_inference_steps: Number of denoising steps.
             guidance_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility.
-            protect_text: Preserve detected text regions via Differential
-                Diffusion (SDXL default profile only). Off by default.
+            protect_text: Detect text regions and preserve them via Differential
+                Diffusion when any are found (SDXL default profile only). On by
+                default; the detector decides per image, and text-free inputs run
+                the standard pass at no extra cost.
 
         Returns:
             Path to the cleaned image.
@@ -458,8 +460,8 @@ class WatermarkRemover:
             )
         else:
             if protect_text:
-                logger.warning(
-                    "protect_text requested but unavailable "
+                logger.debug(
+                    "Text protection unavailable "
                     "(needs the SDXL default model and the cv2 text detector); "
                     "running standard img2img."
                 )
@@ -609,6 +611,10 @@ class WatermarkRemover:
             boxes = text_protector.TextProtector().detect_text_boxes(bgr)
         except Exception as exc:
             logger.warning("Text detection failed (%s); running standard img2img.", exc)
+            return self._run_img2img(init_image, strength, num_inference_steps, guidance_scale, generator)
+
+        if not boxes:
+            self._set_progress("No text detected; running standard img2img.")
             return self._run_img2img(init_image, strength, num_inference_steps, guidance_scale, generator)
 
         width, height = init_image.size

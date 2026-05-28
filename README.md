@@ -107,7 +107,7 @@ SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 P
 
 **Analog Humanizer**: optional film grain and chromatic aberration injection that mimics a photo of a screen, raising the bar for AI-generated image classifiers. (It frustrates generic classifiers but does not guarantee forensic invisibility — see the [arXiv:2605.09203](https://arxiv.org/abs/2605.09203) note above.)
 
-**Text Protection** (`--protect-text`): SDXL img2img regenerates every pixel, so small text and CJK glyphs get deformed at the strengths that defeat SynthID. With this flag a CJK-native PP-OCRv3 text detector (a 2.4 MB ONNX model run on CPU via OpenCV's DNN module, downloaded and cached on first use) locates text regions and the pass switches to Differential Diffusion: a per-pixel change map keeps the text regions largely intact while the background is regenerated normally, so glyphs survive the removal pass. SDXL default pipeline only.
+**Text Protection** (automatic): SDXL img2img regenerates every pixel, so small text and CJK glyphs get deformed at the strengths that defeat SynthID. The SDXL pipeline guards against this by default: a CJK-native PP-OCRv3 text detector (a 2.4 MB ONNX model run on CPU via OpenCV's DNN module, downloaded and cached on first use) locates text regions, and if any are found the pass switches to Differential Diffusion so a per-pixel change map keeps the text regions largely intact while the background is regenerated normally. Text-free images run the standard pass at no extra cost. Pass `--no-protect-text` to turn it off. SDXL default pipeline only.
 
 ### Stripping C2PA, EXIF, and "Made with AI" metadata
 
@@ -249,7 +249,7 @@ remove-ai-watermarks erase image.png --region 1640,1930,400,100 -o clean.png
 remove-ai-watermarks invisible image.png -o clean.png --humanize 4.0
 # Runs at native resolution by default. On a very large image that OOMs the
 # GPU/MPS, cap the long side: --max-resolution 2048
-# Preserve text / CJK glyphs during regeneration: --protect-text
+# Text / CJK glyphs are preserved automatically; disable with --no-protect-text
 
 # Check / strip AI metadata (C2PA, EXIF, "Made with AI" labels)
 # --check also flags SynthID-bearing sources: a C2PA manifest signed by
