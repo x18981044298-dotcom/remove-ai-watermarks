@@ -17,7 +17,7 @@ If this tool saves you time, consider [sponsoring its development](https://githu
 
 ## Features
 
-- **Visible watermark removal** — Gemini / Nano Banana sparkle logo (reverse alpha blending) and the Doubao "豆包AI生成" text strip (locate + mask + inpaint); fast, offline, deterministic, no GPU. `visible --mark auto` picks the right one
+- **Visible watermark removal** — a registry of known marks in their usual places: the Gemini / Nano Banana sparkle and the Doubao "豆包AI生成" text strip. Each is removed by **exact reverse-alpha blending** against a captured alpha map (`original = (wm − α·logo)/(1−α)`), recovering the true pixels rather than inpainting a guess. Fast, offline, no GPU. `visible --mark auto` finds and removes the strongest detected mark. (For arbitrary logos/objects, see `erase`.)
 - **Universal region eraser (`erase`)** — remove any logo / watermark / object inside boxes you specify, regardless of position or colour. Default cv2 inpainting (CPU, instant); optional big-LaMa via onnxruntime (`lama` extra) for higher quality
 - **Invisible watermark removal** — SynthID, StableSignature, TreeRing via diffusion-based regeneration (needs a local GPU, or run it with no setup on [raiw.cc](https://raiw.cc))
 - **AI metadata stripping** — EXIF, PNG text chunks, C2PA provenance manifests (PNG / JPEG / AVIF / HEIF / JPEG-XL, **MP4 / MOV / M4V / M4A** at the container level, and **WebM / MP3 / WAV / FLAC / OGG** losslessly via ffmpeg), XMP DigitalSourceType
@@ -49,7 +49,9 @@ If this tool saves you time, consider [sponsoring its development](https://githu
 | **xAI Grok (Aurora)** | — | — | ✅ EXIF signature scheme (no C2PA): `Signature:` blob + UUID `Artist` | Detected (`identify`); metadata strip |
 | **Midjourney** | — | — | ✅ EXIF + XMP (prompt, model, seed) | Metadata strip |
 | **Meta AI** | — | — | ✅ IPTC "Made with AI" (digitalSourceType) | Metadata strip (removes the label) |
-| **Doubao** (ByteDance) / China AIGC generators | ✅ "豆包AI生成" text strip (bottom-right) | — | ✅ TC260 AIGC label — `<TC260:AIGC>` XMP **or** `AIGC` PNG chunk (China's mandatory AI labeling) | Locate + mask + inpaint (cv2, CPU) + metadata strip |
+| **Doubao** (ByteDance) / China AIGC generators | ✅ "豆包AI生成" text strip (bottom-right) | — | ✅ TC260 AIGC label (`<TC260:AIGC>` XMP **or** `AIGC` PNG chunk) **+ C2PA** signed by ByteDance Volcano Engine (`volcengine`) | Exact reverse-alpha (captured α map): pixel-exact at native width, NCC-aligned at other resolutions, + metadata strip |
+| **Samsung Galaxy AI** (Generative Edit, Sketch to Image, ...) | — | — | ✅ C2PA (signer "Samsung Galaxy") + `trainedAlgorithmicMedia` / proprietary `genAIType` marker | Detected (`identify`) + metadata strip |
+| **Black Forest Labs** (FLUX API) | — | — | ✅ C2PA (`Black Forest Labs API` + `c2pa.ai_generated_content` + `trainedAlgorithmicMedia`) | Metadata strip |
 | **StableSignature** (Meta) | — | ✅ In-model watermark | — | Diffusion regeneration |
 | **TreeRing** | — | ✅ Latent space watermark | — | Diffusion regeneration |
 
@@ -79,9 +81,9 @@ A three-stage NCC (Normalized Cross-Correlation) detector finds the watermark po
 
 ### Removing the Doubao "豆包AI生成" text watermark
 
-Doubao (ByteDance) stamps every output with a light, semi-transparent "豆包AI生成" text strip in the bottom-right corner — the visible AIGC label mandated by China's TC260 standard. Unlike the fixed-size Gemini sparkle, it is a text strip that scales with image width, so we anchor a generous bottom-right box by geometry, extract the light low-saturation glyph pixels with a polarity-aware white top-hat mask, and inpaint them (cv2 Telea/NS). The mask is background-relative, so it leaves white-paper documents untouched instead of smearing their text. On dense-text backgrounds where the mask would explode, removal is skipped rather than guessed.
+Doubao (ByteDance) stamps every output with a light, semi-transparent "豆包AI生成" text strip in the bottom-right corner — the visible AIGC label mandated by China's TC260 standard. It is a fixed semi-transparent white overlay, so — like the Gemini sparkle — it is removed by **exact reverse-alpha blending**: `original = (watermarked - α·logo) / (1 - α)`, recovering the true pixels instead of hallucinating them. The α map and logo colour were solved from controlled black + gray captures (on black, `captured = α·logo`; the black/gray pair solves α per-pixel). At the captured width the placement is exact, so the recovery is returned untouched (inpainting over exactly-recovered pixels only degrades them). The single capture generalizes to any resolution: off the captured width an NCC scale-and-position search registers the α template to the actual mark, and a light residual inpaint cleans the sub-pixel seam there. Detection is consistent with removal: it matches the same alpha glyph silhouette against the corner (normalized correlation), so it keys on the actual "豆包AI生成" shape, not on textured corners.
 
-**Speed**: ~0.03s per image. No GPU needed. Best on photo / illustration backgrounds; on high-contrast edges a faint residue can remain (use `erase --backend lama` for neural-quality fill).
+**Speed**: ~0.05s, no GPU needed. Reverse-alpha at the captured resolution recovers the true background pixels exactly.
 
 ### Universal region eraser
 
@@ -237,9 +239,9 @@ remove-ai-watermarks batch ./images/ --mode all
 # of a clean origin. Add --json for machine-readable output.
 remove-ai-watermarks identify image.png
 
-# Visible watermark only — fast, offline, CPU. --mark auto (default) picks
-# between the Gemini sparkle and the Doubao "豆包AI生成" text strip; force one
-# with --mark gemini / --mark doubao.
+# Visible watermark only — fast, offline, CPU. --mark auto (default) finds the
+# strongest known mark (Gemini sparkle / Doubao "豆包AI生成" text); force one
+# with --mark gemini / doubao. Removed by exact reverse-alpha (true-pixel recovery).
 remove-ai-watermarks visible image.png -o clean.png
 
 # Erase arbitrary region(s) — universal, any logo/watermark/object, any position.
@@ -329,7 +331,7 @@ Tracked but not yet implemented:
 - **Real non-PNG C2PA fixtures**. SynthID-source detection for JPEG / WebP / AVIF is currently covered only by synthetic byte blobs; replace with real vendor-emitted files to ground the binary-scan path.
 - **Maintenance debt**. Strict pyright is now clean across `src/` (0 errors): pure-logic files are fully typed, the cv2 / torch / diffusers boundary files carry a documented per-file relax pragma, and a local `typings/piexif` stub covers piexif. Remaining: full-project `pyright` (no path) still OOMs node on this ML-heavy repo, so it must be scoped to `src/`; narrowing the boundary pragmas back toward full strict (as upstream stubs improve) is the long tail. (`uv-secure` is already clean since `idna` was bumped to 3.16.)
 - **AVIF / HEIF `Exif` item inside the `meta` box**. An AI-label *XMP* packet in a `meta`-box item is now blanked in place (v0.6.9), but EXIF stored as a `meta`-box `Exif` *item* is still not removed — it needs full `iinf`/`iloc` surgery (offset rewrite, corruption risk) or `exiftool` (a non-bundled binary dependency). Low priority: the AI labels we target are XMP, not EXIF, so an EXIF-only meta-box case is rare.
-- **More C2PA device signers**. Leica, Nikon, Google Pixel, Sony, and Truepic are mapped (each verified against a real signed file). Canon and Samsung Galaxy (AI-edit) are deferred until a real signed sample surfaces — no public direct-download C2PA file exists for them today (upload-to-verify / news-agency-licensed only).
+- **More C2PA device signers**. Leica, Nikon, Google Pixel, Sony, and Truepic capture cameras are mapped (each verified against a real signed file); **Samsung Galaxy AI**, **Black Forest Labs (FLUX)**, and **ByteDance Volcano Engine** (Doubao / Jimeng) are now attributed too (verified on real signed files). Canon is still deferred until a real signed sample surfaces — no public direct-download C2PA file exists for it today (upload-to-verify / news-agency-licensed only).
 - **Resemble PerTh audio detection** — evaluated, not feasible with the public API: `get_watermark()` returns a raw bit array with no presence/confidence flag, so watermarked vs. clean audio can't be reliably separated without Resemble's fixed payload or a confidence service. Same wall as the SynthID pixel detector.
 - **Video pipeline (`noai-video`)**: per-frame inpainting and tracking for Sora 2 dynamic logo, Veo 3.1 badge, Kling, Runway. Separate package, not folded into this repo.
 

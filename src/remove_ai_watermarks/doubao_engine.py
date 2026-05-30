@@ -1,29 +1,24 @@
 """Doubao visible watermark removal engine.
 
 Doubao (ByteDance) stamps every generated image with a visible "豆包AI生成"
-(Doubao AI generated) text strip in the bottom-right corner. This is the
-explicit AIGC label mandated by China's TC260 standard, rendered as a
-near-white / light-gray, low-saturation text overlay.
+(Doubao AI generated) text strip in the bottom-right corner -- the explicit AIGC
+label mandated by China's TC260 standard, a near-white semi-transparent overlay.
 
-Unlike the Gemini sparkle (a fixed square logo removed by reverse alpha
-blending against a captured alpha map), the Doubao mark is a text strip whose
-exact alpha map we do not yet have. This engine therefore removes it by:
+Like the Gemini sparkle, it is a fixed overlay, so it is removed by **exact
+reverse-alpha blending** against a captured alpha map (``remove_watermark_reverse_alpha``):
+``original = (wm - a*logo)/(1-a)`` -- recovering the true pixels, not an inpaint
+guess. The alpha map + logo colour were solved from black+gray Doubao captures
+(see data/doubao_capture/ and the reverse-alpha section below) and bundled as
+``assets/doubao_alpha.png``.
 
-    locate -> mask -> inpaint
+Detection (``detect``) is reverse-alpha-consistent: it matches that same alpha
+glyph silhouette against the corner via normalized correlation, so it keys on
+the actual "豆包AI生成" shape rather than coverage/structure heuristics.
 
-1. Locate: the mark scales with image WIDTH and sits in the bottom-right at a
-   fixed margin, so we anchor a generous box there (geometry only -- no bundled
-   template). Constants below are derived from measured Doubao output.
-2. Mask: within the box, extract the light, low-saturation glyph pixels with a
-   polarity-aware rule (the mark is brighter than dark backgrounds and a
-   distinct off-white gray against light backgrounds).
-3. Inpaint: cv2 inpainting (TELEA / NS) reconstructs the covered pixels.
-
-This is fast, offline, deterministic, and needs no GPU. A future upgrade path
-is per-pixel reverse alpha blending once a Doubao alpha map is captured on a
-controlled black background (see data/doubao_capture/), which would recover the
-true pixels instead of hallucinating them -- the same approach as the Gemini
-engine.
+``locate`` (geometry box, scales with image WIDTH) and ``extract_mask`` (the
+candidate glyph mask the detector correlates) remain; there is no inpaint-based
+removal here -- arbitrary-region inpainting lives in ``region_eraser`` / the
+``erase`` command. Fast, offline, no GPU.
 """
 
 # cv2/numpy boundary: third-party libs ship no usable element types; relax the
@@ -33,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
@@ -66,17 +61,63 @@ MAX_SATURATION = 55  # max channel spread to count a pixel as "grayish"
 LOGO_MIN_LUMA = 150  # glyphs are at least this bright in absolute terms
 TOPHAT_DELTA = 12  # glyph must exceed the local background by this many levels
 
-# Detection: a genuine label fills a meaningful fraction of the box. Measured
-# coverage is >=0.20 on real Doubao outputs; random/textured corners stay <=0.06
-# on large images but can spike to ~0.15 on tiny ones (small box -> high variance),
-# so the threshold sits above that spike and below the real-mark floor.
-DETECT_MIN_COVERAGE = 0.16
+# Detection is reverse-alpha-consistent: the mark is recognized by matching the
+# bundled alpha-template glyph silhouette (assets/doubao_alpha.png -- the exact
+# shape we invert) against the extracted candidate mask via zero-mean normalized
+# correlation (cv2 TM_CCOEFF_NORMED). It keys on the actual "豆包AI生成" glyph
+# SHAPE, not on coverage/structure heuristics, so a merely-textured corner does
+# not fire (the old coverage detector false-positived on ~28% of images; #23).
+# Corpus-tuned: real marks score median ~0.61, arbitrary corners <=0.17 (p99);
+# threshold 0.4 -> false positives 7/1243 (0.6%). A small coverage floor skips
+# the template match on a near-empty candidate box.
+DETECT_MIN_COVERAGE = 0.04
+DETECT_NCC_THRESHOLD = 0.4
 
-# Safety: a text strip fills a modest slice of the (generous) box. When the box
-# is over a dense-text / document background the mask explodes and cv2 inpainting
-# would smear the real content. Above this coverage we refuse to inpaint and
-# leave the image untouched -- that hard case needs the neural path, not a guess.
-MAX_INPAINT_COVERAGE = 0.50
+# ── Reverse-alpha (exact recovery, Gemini-style) ─────────────────────
+# The Doubao mark is a fixed semi-transparent white overlay, so given its alpha
+# map the original pixels are recovered exactly: original = (wm - a*logo)/(1-a).
+# The alpha map + logo colour were solved from black+gray Doubao captures on a
+# controlled background (data/doubao_capture/): on black, captured = a*logo, and
+# the black/gray pair solves a per-pixel WITHOUT assuming the logo colour. The
+# bundled asset (assets/doubao_alpha.png) is the alpha template (a*255) at the
+# captured width. The mark scales with image WIDTH, but a pure width-scale is
+# only sub-pixel-accurate at the captured width and ghosts elsewhere, so removal
+# does NOT trust fixed geometry: `_aligned_alpha_map` registers the template to
+# the actual mark by a TM_CCOEFF_NORMED scale+position search, which makes the
+# single capture work at any resolution (verified clean on 1773x2364). Verified
+# 2026-05-29: white-capture cross-check -> mark vanishes to a flat fill; clean on
+# doubao-1.png (2048) and the 3:4 portrait corpus size.
+_ALPHA_NATIVE_WIDTH = 2048
+_ALPHA_LOGO_BGR: tuple[float, float, float] = (252.0, 255.0, 255.0)
+_ALPHA_WIDTH_FRAC = 0.1572  # glyph width / image width -- the alignment scale seed
+_ALPHA_HEIGHT_FRAC = 0.0347
+# Margins (of image WIDTH) of the captured mark -- the geometry record / where to
+# seed; alignment refines the actual position, so these are not load-bearing.
+_ALPHA_MARGIN_RIGHT_FRAC = 0.0166
+_ALPHA_MARGIN_BOTTOM_FRAC = 0.0195
+# Alignment scale search (np.linspace args) around the width-scaled glyph size.
+_ALPHA_ALIGN_SEARCH = (0.88, 1.12, 13)
+# At (near) the captured width the fixed geometry is pixel-exact, so we use it
+# directly there -- NCC alignment is integer-pixel and would land ~1px off,
+# degrading the otherwise-exact native recovery. Off this band, alignment wins.
+_ALPHA_NATIVE_BAND = 0.03
+_alpha_template_cache: NDArray[Any] | None = None
+
+
+def _alpha_template() -> NDArray[Any] | None:
+    """Lazily load the bundled Doubao alpha template (float [0,1]), or None."""
+    global _alpha_template_cache
+    if _alpha_template_cache is None:
+        from pathlib import Path
+
+        from remove_ai_watermarks import image_io
+
+        path = Path(__file__).parent / "assets" / "doubao_alpha.png"
+        img = image_io.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        _alpha_template_cache = img.astype(np.float32) / 255.0
+    return _alpha_template_cache
 
 
 @dataclass(frozen=True)
@@ -102,6 +143,39 @@ class DoubaoDetection:
     confidence: float = 0.0
     region: tuple[int, int, int, int] = (0, 0, 0, 0)
     coverage: float = 0.0  # fraction of the box occupied by glyph pixels
+
+
+_silhouette_cache: NDArray[Any] | None = None
+
+
+def _glyph_silhouette() -> NDArray[Any] | None:
+    """Binary "豆包AI生成" silhouette (255 = glyph) from the bundled alpha map,
+    used as the detection template. None if the alpha asset is missing."""
+    global _silhouette_cache
+    if _silhouette_cache is None:
+        at = _alpha_template()
+        if at is None:
+            return None
+        _silhouette_cache = (at > 0.15).astype(np.uint8) * 255
+    return _silhouette_cache
+
+
+def _template_match_score(box_mask: NDArray[Any], image_width: int) -> float:
+    """Zero-mean normalized correlation of the alpha-template glyph silhouette
+    (scaled to the mark's expected size) against the candidate ``box_mask``.
+
+    TM_CCOEFF_NORMED keys on glyph SHAPE, not coverage, so a dense textured
+    corner does not score highly -- only the actual "豆包AI生成" shape does.
+    """
+    sil = _glyph_silhouette()
+    if sil is None or box_mask.size == 0:
+        return 0.0
+    gw = min(box_mask.shape[1] - 1, max(8, int(_ALPHA_WIDTH_FRAC * image_width)))
+    gh = min(box_mask.shape[0] - 1, max(4, int(_ALPHA_HEIGHT_FRAC * image_width)))
+    if gw < 8 or gh < 4:
+        return 0.0
+    template = cv2.resize(sil, (gw, gh), interpolation=cv2.INTER_NEAREST)
+    return float(cv2.matchTemplate(box_mask, template, cv2.TM_CCOEFF_NORMED).max())
 
 
 class DoubaoEngine:
@@ -176,10 +250,12 @@ class DoubaoEngine:
     # ── Detect ────────────────────────────────────────────────────────
 
     def detect(self, image: NDArray[Any]) -> DoubaoDetection:
-        """Detect the visible Doubao mark by glyph coverage in the corner box.
+        """Detect the visible Doubao mark by matching the alpha-template glyph
+        silhouette against the corner candidate (TM_CCOEFF_NORMED).
 
-        Heuristic: a genuine label fills a meaningful fraction of the box with
-        text-like glyph pixels. Coverage maps to a confidence score.
+        Keys on the "豆包AI生成" SHAPE, not coverage, so a textured corner does
+        not fire. ``confidence`` is the correlation score; ``detected`` is it
+        clearing ``DETECT_NCC_THRESHOLD``.
         """
         det = DoubaoDetection()
         if image is None or image.size == 0:
@@ -191,53 +267,113 @@ class DoubaoEngine:
         coverage = float((box > 0).sum()) / float(max(1, bw * bh))
         det.region = loc.bbox
         det.coverage = coverage
-        # Map coverage to a 0-1 confidence: ~0.06 (noise floor) -> 0, ~0.26 -> 1.
-        det.confidence = float(max(0.0, min(1.0, (coverage - 0.06) / 0.20)))
-        det.detected = coverage >= DETECT_MIN_COVERAGE
-        logger.debug("Doubao detect: coverage=%.3f conf=%.3f", coverage, det.confidence)
+        if coverage >= DETECT_MIN_COVERAGE:
+            score = _template_match_score(box, image.shape[1])
+            det.confidence = score
+            det.detected = score >= DETECT_NCC_THRESHOLD
+            logger.debug("Doubao detect: coverage=%.3f ncc=%.2f detected=%s", coverage, score, det.detected)
         return det
 
-    # ── Remove ────────────────────────────────────────────────────────
+    # ── Reverse-alpha (exact recovery) ────────────────────────────────
 
-    def remove_watermark(
-        self,
-        image: NDArray[Any],
-        *,
-        inpaint_method: Literal["telea", "ns"] = "telea",
-        inpaint_radius: int = 6,
-        dilate: int = 3,
-    ) -> NDArray[Any]:
-        """Remove the visible Doubao watermark by inpainting the glyph mask.
+    def reverse_alpha_available(self, image: NDArray[Any]) -> bool:
+        """True if the bundled alpha map is loadable. Sub-pixel NCC alignment
+        (see ``_aligned_alpha_map``) places it on the actual mark at ANY
+        resolution, so there is no width gate -- the caller still gates on
+        ``detect`` so a clean corner is never touched."""
+        return image is not None and image.size > 0 and _alpha_template() is not None
 
-        Returns an unmodified copy when no glyph pixels are found (so we never
-        smear a clean corner). ``dilate`` grows the mask to cover anti-aliased
-        glyph edges before inpainting.
-        """
-        if image is None or image.size == 0:
-            return image
+    def _fixed_alpha_map(self, image: NDArray[Any]) -> tuple[NDArray[Any], tuple[int, int, int, int]] | None:
+        """Place the template by fixed width-relative geometry -- pixel-exact at
+        the captured width (used there instead of integer-pixel NCC alignment)."""
+        at = _alpha_template()
+        if at is None:
+            return None
+        h, w = image.shape[:2]
+        gw, gh = max(1, int(_ALPHA_WIDTH_FRAC * w)), max(1, int(_ALPHA_HEIGHT_FRAC * w))
+        ax = max(0, w - int(_ALPHA_MARGIN_RIGHT_FRAC * w) - gw)
+        ay = max(0, h - int(_ALPHA_MARGIN_BOTTOM_FRAC * w) - gh)
+        amap = np.zeros((h, w), np.float32)
+        amap[ay : ay + gh, ax : ax + gw] = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
+        return amap, (ax, ay, gw, gh)
+
+    def _aligned_alpha_map(self, image: NDArray[Any]) -> tuple[NDArray[Any], tuple[int, int, int, int]] | None:
+        """Build a full-image alpha map with the captured template registered to
+        the actual mark via a TM_CCOEFF_NORMED scale + position search -- so the
+        single capture works off the captured width (a pure width-scale ghosts).
+        Returns ``(alpha_map, glyph_bbox)`` or None."""
+        at = _alpha_template()
+        sil = _glyph_silhouette()
+        if at is None or sil is None:
+            return None
+        h, w = image.shape[:2]
         loc = self.locate(image)
-        mask = self.extract_mask(image, loc)
-        if not mask.any():
-            logger.debug("Doubao remove: no glyph pixels found; returning copy")
+        bx, by, bw, bh = loc.bbox
+        box_mask = self.extract_mask(image, loc)[by : by + bh, bx : bx + bw]
+        expected = _ALPHA_WIDTH_FRAC * w
+        best: tuple[float, int, int, int, int] | None = None
+        for scale in np.linspace(*_ALPHA_ALIGN_SEARCH):
+            gw, gh = int(expected * scale), int(_ALPHA_HEIGHT_FRAC * w * scale)
+            if gw < 8 or gh < 4 or gw >= bw or gh >= bh:
+                continue
+            t = cv2.resize(sil, (gw, gh), interpolation=cv2.INTER_NEAREST)
+            _, score, _, top_left = cv2.minMaxLoc(cv2.matchTemplate(box_mask, t, cv2.TM_CCOEFF_NORMED))
+            if best is None or score > best[0]:
+                best = (score, gw, gh, top_left[0], top_left[1])
+        if best is None:
+            return None
+        _, gw, gh, ox, oy = best
+        ax, ay = bx + ox, by + oy
+        amap = np.zeros((h, w), np.float32)
+        amap[ay : ay + gh, ax : ax + gw] = cv2.resize(at, (gw, gh), interpolation=cv2.INTER_LINEAR)
+        return amap, (ax, ay, gw, gh)
+
+    def _apply_reverse_alpha(self, image: NDArray[Any], amap: NDArray[Any]) -> NDArray[Any]:
+        """Invert the alpha blend with ``amap``: ``original = (wm - a*logo)/(1-a)``."""
+        a3 = np.clip(amap, 0.0, 1.0)[:, :, None]
+        logo = np.array(_ALPHA_LOGO_BGR, np.float32)
+        return np.clip((image.astype(np.float32) - a3 * logo) / np.clip(1.0 - a3, 0.25, 1.0), 0, 255).astype(np.uint8)
+
+    def remove_watermark_reverse_alpha(self, image: NDArray[Any], *, residual_inpaint: bool = True) -> NDArray[Any]:
+        """Recover the original pixels by inverting the alpha blend
+        ``original = (wm - a*logo)/(1-a)``.
+
+        Placement: at (near) the captured width the fixed geometry is pixel-exact,
+        so the recovery is returned UNTOUCHED -- inpainting over exactly-recovered
+        interior pixels only swaps them for a cv2 hallucination (measured worse on
+        textured backgrounds: native error vs true bg 1.6 reverse-alpha-only vs
+        2.6 with full-footprint inpaint). Off-native, NCC alignment registers the
+        template to the real mark; the alignment is only sub-pixel-approximate, so
+        the interior recovery is no longer exact and the seam can re-trip the
+        detector. There we try BOTH placements and keep whichever leaves the least
+        residual mark (on a faint/busy-background mark the NCC peak can wander a
+        few px, where geometry wins; on a clear mark alignment wins) -- no magic
+        threshold, it just picks the better removal -- then a residual inpaint over
+        the glyph footprint cleans the seam (the interior is approximate anyway, so
+        inpaint there costs nothing and reliably clears the mark).
+        Call only when :meth:`reverse_alpha_available` and the mark is detected.
+        """
+        at_native = abs(image.shape[1] / _ALPHA_NATIVE_WIDTH - 1.0) <= _ALPHA_NATIVE_BAND
+        if at_native:
+            amap = self._fixed_alpha_map(image)
+            return self._apply_reverse_alpha(image, amap[0]) if amap is not None else image.copy()
+        maps = [c for c in (self._fixed_alpha_map(image), self._aligned_alpha_map(image)) if c is not None]
+        if not maps:
             return image.copy()
-
-        x, y, bw, bh = loc.bbox
-        coverage = float((mask[y : y + bh, x : x + bw] > 0).sum()) / float(max(1, bw * bh))
-        if coverage > MAX_INPAINT_COVERAGE:
-            logger.warning(
-                "Doubao remove: box coverage %.2f exceeds %.2f (dense-text/document "
-                "background); leaving image untouched to avoid smearing content",
-                coverage,
-                MAX_INPAINT_COVERAGE,
-            )
+        best_out: NDArray[Any] | None = None
+        best_amap: NDArray[Any] | None = None
+        best_residual = float("inf")
+        for amap, _region in maps:
+            out = self._apply_reverse_alpha(image, amap)
+            residual = self.detect(out).confidence
+            if residual < best_residual:
+                best_residual, best_out, best_amap = residual, out, amap
+        if best_out is None or best_amap is None:  # pragma: no cover - maps is non-empty
             return image.copy()
-
-        if dilate > 0:
-            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate + 1, 2 * dilate + 1))
-            mask = cv2.dilate(mask, k)
-
-        flag = cv2.INPAINT_TELEA if inpaint_method == "telea" else cv2.INPAINT_NS
-        return cv2.inpaint(image, mask, inpaint_radius, flag)
+        if residual_inpaint:
+            rm = cv2.dilate((best_amap > 0.10).astype(np.uint8) * 255, np.ones((3, 3), np.uint8))
+            best_out = cv2.inpaint(best_out, rm, 3, cv2.INPAINT_TELEA)
+        return best_out
 
 
 def load_image_bgr(path: str | Path) -> NDArray[Any]:
