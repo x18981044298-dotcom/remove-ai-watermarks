@@ -238,6 +238,13 @@ class JimengEngine:
         """
         h, w = image.shape[:2]
         x, y, bw, bh = loc.bbox
+        # A degenerate ROI (a sliver from an extremely wide/short image) cannot hold
+        # the mark and would feed cv2's GaussianBlur/morphology a ~1-px-tall array,
+        # which can fault the native code on some platforms (observed: a Windows
+        # access violation via the always-align removal's residual `detect`). Skip
+        # the cv2 pipeline and return an empty mask there.
+        if bh < 16 or bw < 16:
+            return np.zeros((h, w), np.uint8)
         # Normalize the ROI to 3-channel BGR: a 2D grayscale or 4-channel BGRA
         # input would otherwise break the axis=2 channel reductions below.
         roi = image[y : y + bh, x : x + bw]

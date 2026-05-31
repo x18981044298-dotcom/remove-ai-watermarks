@@ -4,21 +4,25 @@ Doubao (ByteDance) stamps every generated image with a visible "豆包AI生成"
 (Doubao AI generated) text strip in the bottom-right corner -- the explicit AIGC
 label mandated by China's TC260 standard, a near-white semi-transparent overlay.
 
-Like the Gemini sparkle, it is a fixed overlay, so it is removed by **exact
-reverse-alpha blending** against a captured alpha map (``remove_watermark_reverse_alpha``):
-``original = (wm - a*logo)/(1-a)`` -- recovering the true pixels, not an inpaint
-guess. The alpha map + logo colour were solved from black+gray Doubao captures
-(see data/doubao_capture/ and the reverse-alpha section below) and bundled as
-``assets/doubao_alpha.png``.
+Like the Gemini sparkle and the Jimeng wordmark, it is a fixed overlay, so removal
+starts from **reverse-alpha blending** against a captured alpha map
+(``remove_watermark_reverse_alpha``): ``original = (wm - a*logo)/(1-a)``. The alpha
+map is rebuilt by ``scripts/visible_alpha_solve.py`` from black/gray Doubao captures
+(the careful gray-self solve; logo is pure white) and bundled as
+``assets/doubao_alpha.png``. The mark re-rasterizes a few px off per image, so
+removal ALWAYS NCC-aligns the template to the actual mark and then clears the
+residual edges with a deliberately THIN inpaint over the glyph footprint (an
+earlier under-estimated alpha + fixed-no-inpaint left a readable outline that the
+detector did not flag -- see the reverse-alpha section below).
 
-Detection (``detect``) is reverse-alpha-consistent: it matches that same alpha
-glyph silhouette against the corner via normalized correlation, so it keys on
-the actual "豆包AI生成" shape rather than coverage/structure heuristics.
+Detection (``detect``) is shape-consistent: it matches that same alpha glyph
+silhouette against the corner via normalized correlation, so it keys on the actual
+"豆包AI生成" shape rather than coverage/structure heuristics.
 
 ``locate`` (geometry box, scales with image WIDTH) and ``extract_mask`` (the
-candidate glyph mask the detector correlates) remain; there is no inpaint-based
-removal here -- arbitrary-region inpainting lives in ``region_eraser`` / the
-``erase`` command. Fast, offline, no GPU.
+candidate glyph mask the detector correlates) mirror the Jimeng engine.
+Arbitrary-region inpainting still lives in ``region_eraser`` / the ``erase``
+command. Fast, offline, no GPU.
 """
 
 # cv2/numpy boundary: third-party libs ship no usable element types; relax the
@@ -227,6 +231,13 @@ class DoubaoEngine:
         """
         h, w = image.shape[:2]
         x, y, bw, bh = loc.bbox
+        # A degenerate ROI (a sliver from an extremely wide/short image) cannot hold
+        # the mark and would feed cv2's GaussianBlur/morphology a ~1-px-tall array,
+        # which can fault the native code on some platforms (observed: a Windows
+        # access violation via the always-align removal's residual `detect`). Skip
+        # the cv2 pipeline and return an empty mask there.
+        if bh < 16 or bw < 16:
+            return np.zeros((h, w), np.uint8)
         # Normalize the ROI to 3-channel BGR: a 2D grayscale or 4-channel BGRA
         # input would otherwise break the axis=2 channel reductions below.
         roi = image[y : y + bh, x : x + bw]
