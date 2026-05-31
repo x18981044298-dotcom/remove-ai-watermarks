@@ -465,6 +465,12 @@ def cmd_erase(
     default=False,
     help="Disable automatic text protection (text/CJK is preserved by default on the SDXL pipeline).",
 )
+@click.option(
+    "--no-protect-faces",
+    is_flag=True,
+    default=False,
+    help="Disable face protection (skips the YOLO face detector; use when the image has no people).",
+)
 @click.pass_context
 def cmd_invisible(
     ctx: click.Context,
@@ -479,6 +485,7 @@ def cmd_invisible(
     humanize: float,
     max_resolution: int,
     no_protect_text: bool,
+    no_protect_faces: bool,
 ) -> None:
     """Remove invisible AI watermarks (SynthID, StableSignature, TreeRing).
 
@@ -525,6 +532,7 @@ def cmd_invisible(
         seed=seed,
         humanize=humanize,
         protect_text=not no_protect_text,
+        protect_faces=not no_protect_faces,
         max_resolution=max_resolution,
     )
     elapsed = time.monotonic() - t0
@@ -705,6 +713,12 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
     default=False,
     help="Disable automatic text protection (text/CJK is preserved by default on the SDXL pipeline).",
 )
+@click.option(
+    "--no-protect-faces",
+    is_flag=True,
+    default=False,
+    help="Disable face protection (skips the YOLO face detector; use when the image has no people).",
+)
 @click.pass_context
 def cmd_all(
     ctx: click.Context,
@@ -722,6 +736,7 @@ def cmd_all(
     humanize: float,
     max_resolution: int,
     no_protect_text: bool,
+    no_protect_faces: bool,
 ) -> None:
     """Remove ALL watermarks: visible + invisible + metadata.
 
@@ -813,6 +828,7 @@ def cmd_all(
                 seed=seed,
                 humanize=humanize,
                 protect_text=not no_protect_text,
+                protect_faces=not no_protect_faces,
                 max_resolution=max_resolution,
             )
             console.print("    Invisible watermark removed")

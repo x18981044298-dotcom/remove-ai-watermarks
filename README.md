@@ -122,7 +122,7 @@ SDXL is the default since May 2026: empirically defeats SynthID v2 on Gemini 3 P
 
 > **Oracle vs `identify` can disagree, and that is expected.** An online verifier reads the actual SynthID *pixel* watermark and detects only its own vendor's content — [openai.com/research/verify](https://openai.com/research/verify/) states "OpenAI generation signals will only be detected if the image was generated with our tools". Our `identify` cannot decode the pixel watermark (no vendor ships a local decoder), so it infers SynthID from the **C2PA metadata** instead. So after the SDXL pass the oracle can read "no SynthID" (pixel watermark gone) while `identify` still reports SynthID from a surviving C2PA manifest. They measure different signals. Run `metadata --remove` (or `all`) to also strip the manifest; note that a quiet metadata proxy is not proof the pixel watermark itself is gone.
 
-**Face Protection**: before diffusion, YOLO detects people in the image and extracts them. After diffusion, the original faces are blended back with a soft elliptical mask to prevent AI distortion of facial features.
+**Face Protection**: before diffusion, YOLO detects people in the image and extracts them. After diffusion, the original faces are blended back with a soft elliptical mask to prevent AI distortion of facial features. Pass `--no-protect-faces` to skip the detector entirely (useful when the image has no people).
 
 **Analog Humanizer**: optional film grain and chromatic aberration injection that mimics a photo of a screen, raising the bar for AI-generated image classifiers. (It frustrates generic classifiers but does not guarantee forensic invisibility — see the [arXiv:2605.09203](https://arxiv.org/abs/2605.09203) note above.)
 
