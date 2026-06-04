@@ -108,7 +108,19 @@ def erase_lama(image_bgr: NDArray[Any], mask: NDArray[Any]) -> NDArray[Any]:
     LaMa runs at a fixed square input size. To preserve full-image resolution we
     crop a padded region around the mask, inpaint that crop at the model size,
     and paste only the masked pixels back -- so untouched areas stay pixel-exact.
+
+    Like ``erase_cv2``, accepts 1-channel (grayscale) and 4-channel (BGRA) input:
+    LaMa runs on 3-channel BGR, so grayscale is promoted to BGR (result demoted
+    back) and a BGRA alpha plane is split off and re-attached unchanged. Without
+    this the ``cv2.cvtColor(..., BGR2RGB)`` below would crash on grayscale and
+    silently drop alpha on BGRA.
     """
+    if image_bgr.ndim == 2:
+        bgr = erase_lama(cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR), mask)
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if image_bgr.ndim == 3 and image_bgr.shape[2] == 4:
+        bgr = erase_lama(np.ascontiguousarray(image_bgr[:, :, :3]), mask)
+        return np.dstack([bgr, image_bgr[:, :, 3]])
     session = _get_lama_session()
     inp = session.get_inputs()  # type: ignore[attr-defined]
     img_name = inp[0].name

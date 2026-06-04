@@ -90,3 +90,47 @@ class TestLamaBackend:
             pytest.skip("onnxruntime installed; cannot test the unavailable path")
         with pytest.raises(RuntimeError, match="onnxruntime"):
             erase(img, boxes=[(10, 10, 20, 20)], backend="lama")
+
+
+class TestLamaChannelHandling:
+    """erase_lama must accept grayscale (2D) and BGRA (4-channel) like erase_cv2.
+
+    The real ONNX model is never loaded -- the session is faked to an identity
+    inpaint, so this exercises only the channel promote/split wrapper (the fix for
+    LaMa crashing on grayscale and dropping alpha on BGRA).
+    """
+
+    @pytest.fixture
+    def _fake_lama(self, monkeypatch: pytest.MonkeyPatch):
+        from remove_ai_watermarks import region_eraser
+
+        class _In:
+            def __init__(self, name: str, shape: list[int]):
+                self.name = name
+                self.shape = shape
+
+        class _FakeSession:
+            def get_inputs(self):
+                return [_In("image", [1, 3, 512, 512]), _In("mask", [1, 1, 512, 512])]
+
+            def run(self, _outputs, feeds):
+                # Identity inpaint: echo the image tensor (1,3,size,size) back.
+                return [feeds["image"]]
+
+        monkeypatch.setattr(region_eraser, "lama_available", lambda: True)
+        monkeypatch.setattr(region_eraser, "_get_lama_session", lambda: _FakeSession())
+
+    @pytest.mark.usefixtures("_fake_lama")
+    def test_grayscale_2d_does_not_raise(self):
+        gray = np.full((100, 100), 120, np.uint8)
+        out = erase(gray, boxes=[(40, 40, 20, 20)], backend="lama")
+        assert out.ndim == 2
+        assert out.shape == gray.shape
+
+    @pytest.mark.usefixtures("_fake_lama")
+    def test_bgra_preserves_alpha(self):
+        bgra = np.full((100, 100, 4), 120, np.uint8)
+        bgra[..., 3] = 200  # opaque-ish alpha plane
+        out = erase(bgra, boxes=[(40, 40, 20, 20)], backend="lama")
+        assert out.shape == bgra.shape
+        assert np.array_equal(out[..., 3], bgra[..., 3])  # alpha carried through unchanged

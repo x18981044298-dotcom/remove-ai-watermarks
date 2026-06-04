@@ -692,6 +692,9 @@ class WatermarkRemover:
         output_dir.mkdir(parents=True, exist_ok=True)
         cleaned_paths: list[Path] = []
 
+        # Lazy import keeps this module torch-optional; frees device cache per image.
+        from remove_ai_watermarks.noai.img2img_runner import try_empty_device_cache
+
         for ext in extensions:
             for image_path in input_dir.glob(f"*{ext}"):
                 output_path = output_dir / image_path.name
@@ -705,6 +708,7 @@ class WatermarkRemover:
                     cleaned_paths.append(result_path)
                 except Exception as e:
                     logger.error("Failed to process %s: %s", image_path, e)
+                try_empty_device_cache(self.device)
 
         return cleaned_paths
 

@@ -102,7 +102,7 @@ def run_img2img_with_mps_fallback(
         if device == "mps" and is_mps_error(error):
             logger.warning("MPS error detected: %s. Falling back to CPU.", error)
             set_progress("MPS error! Clearing cache and retrying on CPU...")
-            _try_clear_mps_cache()
+            try_empty_device_cache("mps")
             pipeline = reload_on_cpu()
             img = run_img2img(
                 pipeline, image, strength, num_inference_steps, guidance_scale, None, "cpu", set_progress, extra_kwargs
@@ -137,9 +137,16 @@ def _call_pipeline(
     return pipeline(**kwargs)
 
 
-def _try_clear_mps_cache() -> None:
+def try_empty_device_cache(device: str) -> None:
+    """Best-effort free of cached GPU/MPS/XPU memory for ``device``.
+
+    ``torch.<device>.empty_cache()`` exists for cuda/mps/xpu but not cpu (the
+    hasattr guard skips the cpu no-op). Never raises -- callers use it as cleanup
+    (the MPS->CPU fallback here, and the batch loop in watermark_remover).
+    """
     with contextlib.suppress(Exception):
         import torch
 
-        if hasattr(torch, "mps"):
-            torch.mps.empty_cache()  # type: ignore[attr-defined]
+        backend = getattr(torch, device, None)
+        if backend is not None and hasattr(backend, "empty_cache"):
+            backend.empty_cache()  # type: ignore[attr-defined]

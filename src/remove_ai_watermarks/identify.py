@@ -40,7 +40,7 @@ from remove_ai_watermarks.metadata import (
     xai_signature,
 )
 from remove_ai_watermarks.noai.c2pa import cbor_text_after, extract_c2pa_info, soft_binding_vendors_in
-from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_ISSUERS
+from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_AI_VENDORS, C2PA_ISSUERS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,19 +59,13 @@ _SCAN_BYTES = 1024 * 1024
 # signal (e.g. an OpenAI image scored 0.37 -- below threshold, correctly dropped).
 _SPARKLE_THRESHOLD = 0.5
 
-# Issuer (C2PA signer) -> human-readable generating platform. Ordered: when a
-# manifest names several issuers (Microsoft Designer signs as "OpenAI,
-# Microsoft"), the first match wins so the product, not the backend, is named.
-_ISSUER_PLATFORM: tuple[tuple[str, str], ...] = (
-    # Microsoft signs both Designer and Bing Image Creator; Bing now runs its
-    # own MAI-Image model (not DALL-E), so the label stays model-neutral.
-    ("Microsoft", "Microsoft (Bing Image Creator / Designer)"),
-    ("Adobe", "Adobe Firefly"),
-    ("OpenAI", "OpenAI (ChatGPT / gpt-image / DALL-E / Sora)"),
-    ("Google", "Google (Gemini / Imagen)"),
-    ("Stability AI", "Stability AI (Stable Image / DreamStudio)"),
-    ("Black Forest Labs", "Black Forest Labs (FLUX)"),
-    ("ByteDance", "ByteDance (Doubao / Jimeng / Volcano Engine)"),
+# Issuer (C2PA signer) -> human-readable generating platform, derived from the
+# single C2PA_AI_VENDORS registry. Ordered: when a manifest names several issuers
+# (Microsoft Designer signs as "OpenAI, Microsoft"), the first match wins so the
+# product, not the backend, is named -- the registry order encodes that priority.
+# Signing authorities without an AI platform (e.g. Truepic) are skipped here.
+_ISSUER_PLATFORM: tuple[tuple[str, str], ...] = tuple(
+    (v.needle, v.platform) for v in C2PA_AI_VENDORS if v.platform is not None and v.needle is not None
 )
 
 # PNG-text / EXIF keys that indicate a local diffusion pipeline (vs. a hosted

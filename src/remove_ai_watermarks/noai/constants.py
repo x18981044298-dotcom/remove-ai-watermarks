@@ -4,6 +4,8 @@ All modules reference these constants rather than hard-coding values,
 so adding a new AI tool or metadata key requires updating only this file.
 """
 
+from typing import NamedTuple
+
 # Supported image formats
 SUPPORTED_FORMATS = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -78,25 +80,56 @@ C2PA_SIGNATURES = [
     b"manifest",
 ]
 
-# C2PA known issuers
-C2PA_ISSUERS = {
-    b"Google": "Google LLC",
-    b"Adobe": "Adobe",
-    b"Microsoft": "Microsoft",
-    b"OpenAI": "OpenAI",
-    b"Truepic": "Truepic",
+
+# Single source of truth for every C2PA-signing vendor. The three per-vendor
+# facts that used to live in separate tables -- the issuer byte signature
+# (C2PA_ISSUERS), the SynthID pairing (SYNTHID_C2PA_ISSUERS), and the human
+# platform label (identify._ISSUER_PLATFORM) -- are all fields here, so adding a
+# new C2PA vendor is a single append below; the views derive automatically.
+class C2paAiVendor(NamedTuple):
+    issuer: bytes  # distinctive byte signature scanned in the manifest (cert org / signer)
+    org: str  # resolved issuer/cert-org display name (the old C2PA_ISSUERS value)
+    # Human platform label for identify; None marks a signing authority / non-generator
+    # (e.g. Truepic), which never names an AI platform on its own.
+    platform: str | None
+    # Substring matched against the joined issuer-org names for platform attribution
+    # (usually a shorter form of org, e.g. "Google" for "Google LLC"); None when platform is.
+    needle: str | None
+    synthid: bool = False  # vendor pairs an invisible SynthID pixel watermark with its C2PA manifest
+
+
+# C2PA known vendors, ORDERED for first-match-wins platform attribution: when a
+# manifest names several issuers (Microsoft Designer signs as "OpenAI, Microsoft"),
+# the earlier entry wins so the product, not the backend engine, is named.
+# Used by Google Imagen, Adobe Firefly, Microsoft Designer, OpenAI, etc.
+C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
+    # Microsoft signs both Designer and Bing Image Creator; Bing now runs its own
+    # MAI-Image model (not DALL-E), so the label stays model-neutral.
+    C2paAiVendor(b"Microsoft", "Microsoft", "Microsoft (Bing Image Creator / Designer)", "Microsoft"),
+    C2paAiVendor(b"Adobe", "Adobe", "Adobe Firefly", "Adobe"),
+    C2paAiVendor(b"OpenAI", "OpenAI", "OpenAI (ChatGPT / gpt-image / DALL-E / Sora)", "OpenAI", synthid=True),
+    C2paAiVendor(b"Google", "Google LLC", "Google (Gemini / Imagen)", "Google", synthid=True),
     # Stability AI signs C2PA as "Stability AI" (cert org "Stability AI Ltd").
     # Verified on a live Brand Studio (DreamStudio successor) output, 2026-05-24.
-    b"Stability AI": "Stability AI",
+    C2paAiVendor(b"Stability AI", "Stability AI", "Stability AI (Stable Image / DreamStudio)", "Stability AI"),
     # Black Forest Labs (FLUX) API output: claim_generator_info "Black Forest
     # Labs API" + a c2pa.ai_generated_content assertion + trainedAlgorithmicMedia.
     # Verified on a real signed FLUX JPEG, 2026-05-29.
-    b"Black Forest Labs": "Black Forest Labs",
+    C2paAiVendor(b"Black Forest Labs", "Black Forest Labs", "Black Forest Labs (FLUX)", "Black Forest Labs"),
     # ByteDance's Volcano Engine (Volcengine) signs its AI image output with a
     # cert from certificate_center@volcengine.com -- the platform behind Doubao /
     # Jimeng. Verified on two real signed JPEGs, 2026-05-29.
-    b"volcengine": "ByteDance (Volcano Engine)",
-}
+    C2paAiVendor(
+        b"volcengine", "ByteDance (Volcano Engine)", "ByteDance (Doubao / Jimeng / Volcano Engine)", "ByteDance"
+    ),
+    # Truepic is a C2PA signing authority, not an AI generator: no platform label,
+    # never asserts is_ai (the verdict comes from the digital-source-type).
+    C2paAiVendor(b"Truepic", "Truepic", None, None),
+)
+
+# Derived view -- add a vendor to C2PA_AI_VENDORS above, not here.
+# C2PA issuer signature -> resolved org name, for the manifest byte-scan.
+C2PA_ISSUERS: dict[bytes, str] = {v.issuer: v.org for v in C2PA_AI_VENDORS}
 
 # C2PA issuers whose signed outputs also carry an invisible SynthID pixel
 # watermark -- a metadata proxy for "SynthID is in the pixels":
@@ -117,7 +150,8 @@ C2PA_ISSUERS = {
 # C2PA manifest alone is not a SynthID signal -- the issuer is. The pixel
 # watermark is not locally detectable (proprietary decoder); the C2PA companion
 # is the proxy, and only while the manifest is intact.
-SYNTHID_C2PA_ISSUERS = frozenset({b"Google", b"OpenAI"})
+# Derived from the `synthid` flag on C2PA_AI_VENDORS -- set it there, not here.
+SYNTHID_C2PA_ISSUERS: frozenset[bytes] = frozenset(v.issuer for v in C2PA_AI_VENDORS if v.synthid)
 
 # C2PA known AI tools
 C2PA_AI_TOOLS = {

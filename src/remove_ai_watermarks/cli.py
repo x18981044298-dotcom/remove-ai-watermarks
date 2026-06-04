@@ -1000,6 +1000,7 @@ def _process_batch_image(
     min_resolution: int = 1024,
     restore_faces: bool = False,
     restore_faces_weight: float = 0.5,
+    controlnet_scale: float = 1.0,
 ) -> None:
     """Process a single image for batch mode.
 
@@ -1050,6 +1051,7 @@ def _process_batch_image(
                     device=None if device == "auto" else device,
                     pipeline=pipeline,
                     hf_token=hf_token,
+                    controlnet_conditioning_scale=controlnet_scale,
                 )
             engine_inv = ctx.obj["_inv_engine"]
             engine_inv.remove_watermark(
@@ -1124,6 +1126,7 @@ def _process_batch_image(
 @_restore_faces_options
 @_min_resolution_option
 @_unsharp_option
+@_controlnet_scale_option
 @click.pass_context
 def cmd_batch(
     ctx: click.Context,
@@ -1143,6 +1146,7 @@ def cmd_batch(
     min_resolution: int,
     restore_faces: bool,
     restore_faces_weight: float,
+    controlnet_scale: float,
 ) -> None:
     """Process all images in a directory."""
     _banner()
@@ -1197,6 +1201,7 @@ def cmd_batch(
                     min_resolution=min_resolution,
                     restore_faces=restore_faces,
                     restore_faces_weight=restore_faces_weight,
+                    controlnet_scale=controlnet_scale,
                 )
                 processed += 1
 

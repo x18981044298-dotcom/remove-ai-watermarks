@@ -30,5 +30,12 @@ jobs:
       - name: Build package
         run: uv build
 
+      # Publish with `uv publish` (its own uploader, not the twine bundled in the
+      # old pypa action). Trusted publishing is automatic in GitHub Actions: the
+      # `id-token: write` permission + the `pypi` environment supply the OIDC token,
+      # and PyPI's trusted-publisher entry matches on repo + workflow filename +
+      # environment name (all unchanged from the pypa-action setup), so no API token
+      # is needed. uv's uploader also accepts Metadata-Version 2.5 -- the permanent
+      # fix that lets the hatchling pin be relaxed (see pyproject [build-system]).
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        run: uv publish

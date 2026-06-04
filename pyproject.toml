@@ -132,12 +132,18 @@ remove-ai-watermarks = "remove_ai_watermarks.cli:main"
 Repository = "https://github.com/wiltodelta/remove-ai-watermarks"
 
 [build-system]
-# Pin hatchling < 1.28: 1.28+ emits Metadata-Version 2.5 (PEP 639), which the twine
-# bundled in pypa/gh-action-pypi-publish@release/v1 rejects ("'2.5' is not a valid
-# Metadata-Version"), failing the PyPI upload (v0.8.3, 2026-06-01). 1.27.x emits 2.4,
-# which uploads fine (0.8.2 shipped on it). Lift this pin once the publish action's
-# twine is upgraded to >= 6.1.0 (2.5-aware) or the workflow moves to `uv publish`.
-requires = ["hatchling<1.28"]
+# Pin hatchling < 1.31. hatchling 1.30.0 made Metadata-Version 2.5 (PEP 794) the
+# default, which the twine bundled in pypa/gh-action-pypi-publish@release/v1 rejects
+# ("'2.5' is not a valid Metadata-Version"), failing the v0.8.3 PyPI upload
+# (2026-06-01) when unpinned requires = ["hatchling"] pulled 1.30.0. hatchling 1.30.1
+# reverted the default to 2.4 ("kept at 2.4 until more tools support 2.5"), and
+# 1.27-1.29 were always 2.4 -- so < 1.31 keeps `uv build` on a 2.4-emitting hatchling
+# (it resolves to the latest allowed, 1.30.1). The publish workflow now uses
+# `uv publish`, whose uploader accepts 2.5, so this pin is belt-and-suspenders, not
+# load-bearing: keeping it makes the first uv-publish release ship 2.4 metadata
+# (isolating the uploader swap from the metadata-version bump). Drop to
+# `requires = ["hatchling"]` once that release confirms the path.
+requires = ["hatchling<1.31"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
