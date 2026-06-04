@@ -1,7 +1,9 @@
-"""Analog Humanizer: film grain and chromatic aberration injection.
+"""Post-processing filters for the cleaned output.
 
-Simulates analog film imperfections to defeat digital AI perfection
-classifiers. Ported from NeuralBleach.
+``apply_analog_humanizer`` injects film grain and chromatic aberration to defeat
+digital AI-perfection classifiers (ported from NeuralBleach); ``unsharp_mask``
+counters the soft, over-smoothed look that diffusion + face-restoration leave
+behind (itself a common "this is AI" tell).
 """
 
 # cv2/numpy boundary: third-party libs ship no usable element types; relax the
@@ -56,3 +58,27 @@ def apply_analog_humanizer(image: NDArray, grain_intensity: float = 4.0, chromat
         humanized = merged
 
     return humanized
+
+
+def unsharp_mask(image: NDArray, amount: float = 0.5, sigma: float = 1.0) -> NDArray:
+    """Sharpen via unsharp masking: ``out = image + amount * (image - blur(image))``.
+
+    Counters the soft, over-smoothed look of the diffusion + GFPGAN passes, which
+    reads as an AI tell. ``amount`` 0 = no-op (returns an unchanged copy); ~0.5-0.8
+    is a safe range -- higher risks bright edge halos that are their own artifact.
+    ``sigma`` is the Gaussian radius of the unsharp kernel.
+
+    Args:
+        image: BGR image as numpy array (uint8).
+        amount: Sharpening strength (0 = off).
+        sigma: Gaussian blur sigma for the unsharp kernel.
+
+    Returns:
+        Sharpened BGR image (uint8).
+    """
+    if amount <= 0.0:
+        return image.copy()
+    img_f = image.astype(np.float32)
+    blurred = cv2.GaussianBlur(img_f, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    sharpened = cv2.addWeighted(img_f, 1.0 + amount, blurred, -amount, 0.0)
+    return np.clip(sharpened, 0, 255).astype(np.uint8)

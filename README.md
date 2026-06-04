@@ -113,7 +113,7 @@ image → encode to latent space (VAE) at native resolution
       → decode back to pixels (VAE)
 ```
 
-- Native resolution avoids shrinking the input to 1024 px first; that down-then-up round-trip was the main quality loss (issue #10). Use `--max-resolution N` only to cap GPU/MPS memory on very large inputs.
+- Large inputs run at native resolution (no down-then-up round-trip, which was the main quality loss in issue #10); use `--max-resolution N` only to cap GPU/MPS memory on very large inputs. Small inputs (long side under 1024 px) are auto-upscaled to a 1024 px floor before diffusion, because SDXL distorts on a tiny latent, and the result is restored to the original size (a transparent quality boost). Disable the floor with `--min-resolution 0`.
 
 > **Default strength is vendor-adaptive (no flag needed).** The tool reads the C2PA issuer to detect which vendor's SynthID is present and picks the strength that clears it with the least quality loss: **OpenAI gpt-image → `0.10`**, **Google Gemini → `0.15`**, **unknown source → `0.15`**. An oracle-verified June 2026 study (clean pipeline, per-image openai.com/verify or Gemini app) found OpenAI's watermark clears at `0.05` across `1024`-`1600` px (resolution-independent) while Google's is ~3x more robust and needs `0.15`. The dominant factor is the vendor, not resolution. There is no local SynthID detector, so if the oracle still reads SynthID, raise `--strength`; if you care more about preserving fine text, lower it. (Caveat: Google's `0.15` was validated on the capped `--max-resolution 1536` path; a very large native Gemini image may need more.)
 >
@@ -277,8 +277,10 @@ remove-ai-watermarks visible image.png -o clean.png
 remove-ai-watermarks erase image.png --region 1640,1930,400,100 -o clean.png
 
 # Invisible watermark only (SynthID etc.) — requires GPU
-remove-ai-watermarks invisible image.png -o clean.png --humanize 4.0
-# Runs at native resolution by default. On a very large image that OOMs the
+remove-ai-watermarks invisible image.png -o clean.png --humanize 4.0 --unsharp 0.5
+# --humanize adds film grain, --unsharp counters the soft "AI" look (both opt-in).
+# Large images run at native resolution; small ones are upscaled to a 1024 floor
+# first (disable with --min-resolution 0). On a very large image that OOMs the
 # GPU/MPS, cap the long side: --max-resolution 2048
 # Strength is vendor-adaptive by default (OpenAI 0.10 / Google 0.15); override
 # with --strength. To preserve text/face structure, use --pipeline controlnet

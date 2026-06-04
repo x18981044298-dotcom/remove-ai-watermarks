@@ -71,3 +71,33 @@ class TestTargetSize:
         # the short side must clamp to 1, never 0.
         assert _target_size(5000, 3, 1024) == (1024, 1)
         assert _target_size(3, 5000, 1024) == (1, 1024)
+
+    # ── min_resolution floor (small inputs upscaled so SDXL runs near 1024) ──
+
+    def test_floor_default_off(self):
+        # min_resolution defaults to 0 -> no upscale, preserving legacy behavior.
+        assert _target_size(381, 512, 0) is None
+
+    def test_floor_upscales_small_input(self):
+        # 381x512 portrait, floor 1024 -> long side 512 scaled up to 1024 (x2).
+        assert _target_size(381, 512, 0, 1024) == (762, 1024)
+        # Landscape: width is the long side.
+        assert _target_size(512, 381, 0, 1024) == (1024, 762)
+
+    def test_floor_rounds_short_side(self):
+        # 333x500, floor 1024: ratio 2.048 -> 333*2.048=681.98 rounds to 682.
+        assert _target_size(333, 500, 0, 1024) == (682, 1024)
+
+    def test_floor_no_op_at_or_above_floor(self):
+        # Long side already >= floor -> no upscale (and no cap set -> native).
+        assert _target_size(1024, 768, 0, 1024) is None
+        assert _target_size(2000, 1000, 0, 1024) is None
+
+    def test_cap_takes_precedence_over_floor(self):
+        # A huge input with both set: the cap downscales; the floor never fires.
+        assert _target_size(2000, 1000, 1024, 1024) == (1024, 512)
+
+    def test_floor_skipped_on_min_above_max_misconfig(self):
+        # min(1024) > max(800) is a misconfig: the floor must not upscale above the
+        # cap, so it is skipped and the (within-cap) input stays native.
+        assert _target_size(500, 400, 800, 1024) is None

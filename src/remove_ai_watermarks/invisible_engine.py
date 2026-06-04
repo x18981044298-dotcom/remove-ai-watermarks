@@ -42,21 +42,32 @@ def is_available() -> bool:
     return importlib.util.find_spec("diffusers") is not None and importlib.util.find_spec("torch") is not None
 
 
-def _target_size(width: int, height: int, max_resolution: int) -> tuple[int, int] | None:
-    """Compute the downscaled (width, height) for a long-side cap, or None for native.
+def _target_size(width: int, height: int, max_resolution: int, min_resolution: int = 0) -> tuple[int, int] | None:
+    """Compute the (width, height) to process at, or None for native.
 
-    Returns None when no pre-downscale is needed: ``max_resolution <= 0`` (native
-    resolution, the default that matches the raiw.cc backend -- see issue #10) or
-    the long side already fits the cap. Otherwise scales the long side down to
-    ``max_resolution`` preserving aspect ratio (integer-truncated, matching the
-    PIL ``resize`` call site). Pure function so the native-vs-downscale decision
-    is unit-testable without loading the diffusion model.
+    Two opposite long-side adjustments, in precedence order:
+
+    - ``max_resolution`` (cap): if the long side exceeds it, scale DOWN to it
+      (integer-truncated, matching the PIL ``resize`` call site). 0/negative = no
+      cap. Set only to bound GPU/MPS memory on very large inputs (issue #10).
+    - ``min_resolution`` (floor): else if the long side is below it, scale UP to it
+      (rounded) so SDXL img2img runs near its ~1024 training resolution instead of
+      degrading on a tiny latent (a 381x512 portrait distorts badly at native).
+      The output is restored to the original size by the caller, so the floor is a
+      transparent quality boost. 0 = no floor. Skipped on a ``min > max`` misconfig.
+
+    Returns None when neither applies (native resolution). Pure function so the
+    resolution decision is unit-testable without loading the diffusion model.
     """
-    if max_resolution > 0 and max(width, height) > max_resolution:
-        ratio = max_resolution / max(width, height)
+    long_side = max(width, height)
+    if max_resolution > 0 and long_side > max_resolution:
+        ratio = max_resolution / long_side
         # Clamp the short side to >=1: extreme aspect ratios (e.g. 5000x3 capped
         # at 1024) would otherwise truncate it to 0 and crash image.resize().
         return (max(1, int(width * ratio)), max(1, int(height * ratio)))
+    if min_resolution > 0 and long_side < min_resolution and (max_resolution <= 0 or min_resolution <= max_resolution):
+        ratio = min_resolution / long_side
+        return (max(1, round(width * ratio)), max(1, round(height * ratio)))
     return None
 
 
@@ -125,9 +136,11 @@ class InvisibleEngine:
         seed: int | None = None,
         humanize: float = 0.0,
         max_resolution: int = 0,
+        min_resolution: int = 1024,
         vendor: str | None = None,
         restore_faces: bool = False,
         restore_faces_weight: float = 0.5,
+        unsharp: float = 0.0,
     ) -> Path:
         """Remove invisible watermark from an image.
 
@@ -146,11 +159,20 @@ class InvisibleEngine:
                 absent or no face is detected.
             restore_faces_weight: GFPGAN fidelity weight (0-1); lower = more GAN
                 regeneration (cleaner watermark scrub), higher = closer to input.
+            unsharp: Final unsharp-mask sharpening strength (0 = off, default).
+                Applied last (after face restoration) to counter the soft,
+                over-smoothed look of the diffusion/GFPGAN passes; ~0.5-0.8 is a
+                safe range, higher risks edge halos.
             max_resolution: Cap the long side (px) before diffusion. 0 (default)
-                = native resolution, no pre-downscale -- matches the hosted
-                raiw.cc backend. Set a positive value only to bound GPU/MPS
-                memory on very large inputs (it reintroduces a lossy
-                downscale->upscale round-trip).
+                = no cap. Set a positive value only to bound GPU/MPS memory on
+                very large inputs (it reintroduces a lossy downscale->upscale
+                round-trip).
+            min_resolution: Upscale the long side UP to this (px) before diffusion
+                when the input is smaller, so SDXL runs near its ~1024 training
+                resolution (small inputs degrade/distort badly at native). 1024
+                (default) = on; 0 = off. The output is restored to the original
+                input size, so this is a transparent quality boost; it adds time
+                and memory on small inputs. Ignored on a min > max misconfig.
 
         Returns:
             Path to the cleaned image.
@@ -159,25 +181,26 @@ class InvisibleEngine:
 
         from PIL import Image, ImageOps
 
-        # Process at native resolution by default (max_resolution=0). The hosted
-        # raiw.cc backend (fal fast-sdxl) does NO pre-downscale either, and at
-        # strength ~0.05 SDXL img2img does not need the input shrunk to ~1024 --
-        # the old forced downscale->upscale round-trip was the main quality loss
-        # (see issue #10). A positive max_resolution caps the long side only to
-        # bound GPU/MPS memory on very large inputs.
+        # Resolution policy: a max_resolution cap (0 = none) bounds memory on huge
+        # inputs, and a min_resolution floor (1024 = default) upscales tiny inputs so
+        # SDXL img2img runs near its ~1024 training size instead of distorting on a
+        # tiny latent (a 381x512 portrait wrecks at native -- issue #36 follow-up).
+        # The output is restored to orig_size below, so the floor is transparent.
         image = Image.open(image_path)
         image = ImageOps.exif_transpose(image)
         orig_size = image.size  # (width, height)
 
-        # Optional long-side downscale; native resolution by default (issue #10).
-        target = _target_size(image.width, image.height, max_resolution)
+        target = _target_size(image.width, image.height, max_resolution, min_resolution)
         if target is not None:
             if self._progress_callback:
-                self._progress_callback(
-                    f"Downscaling {image.width}x{image.height} "
-                    f"to {target[0]}x{target[1]} "
-                    f"(max-resolution cap {max_resolution}px)..."
+                upscaling = max(target) > max(image.width, image.height)
+                reason = (
+                    f"min-resolution floor {min_resolution}px"
+                    if upscaling
+                    else f"max-resolution cap {max_resolution}px"
                 )
+                verb = "Upscaling" if upscaling else "Downscaling"
+                self._progress_callback(f"{verb} {image.width}x{image.height} to {target[0]}x{target[1]} ({reason})...")
             image = image.resize(target, Image.Resampling.LANCZOS)
 
         # Always persist to a temp file, even without downscaling: WatermarkRemover
@@ -249,6 +272,20 @@ class InvisibleEngine:
             # absent or the optional extra is not installed.
             if restore_faces:
                 self._restore_faces(out_path, image, restore_faces_weight)
+
+            # Final sharpening, LAST so it crisps the face-restored result too (a
+            # pre-GFPGAN sharpen would be smoothed back over by the face pass).
+            if unsharp > 0.0:
+                import cv2
+
+                from remove_ai_watermarks import image_io
+                from remove_ai_watermarks.humanizer import unsharp_mask
+
+                out_cv = image_io.imread(out_path, cv2.IMREAD_COLOR)
+                if out_cv is not None:
+                    if self._progress_callback:
+                        self._progress_callback(f"Sharpening (unsharp mask: {unsharp})...")
+                    image_io.imwrite(out_path, unsharp_mask(out_cv, amount=unsharp))
 
             return out_path
         finally:

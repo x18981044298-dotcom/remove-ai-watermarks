@@ -147,6 +147,18 @@ _controlnet_scale_option = click.option(
     "only (EXPERIMENTAL).",
 )
 
+_min_resolution_option = click.option(
+    "--min-resolution",
+    type=int,
+    default=1024,
+    help="Upscale long side UP to this (px) before diffusion when the input is smaller, so SDXL runs "
+    "near 1024 (small inputs distort at native); output is restored to the input size. 0 = off. Default 1024.",
+)
+
+_unsharp_option = click.option(
+    "--unsharp", type=float, default=0.0, help="Unsharp-mask sharpening strength (0 = off, typical: 0.3-0.8)."
+)
+
 
 def _restore_faces_options(f: Any) -> Any:
     """Attach the shared GFPGAN face-restoration flags to an invisible-pipeline command."""
@@ -493,6 +505,8 @@ def cmd_erase(
 )
 @_controlnet_scale_option
 @_restore_faces_options
+@_min_resolution_option
+@_unsharp_option
 @click.pass_context
 def cmd_invisible(
     ctx: click.Context,
@@ -505,7 +519,9 @@ def cmd_invisible(
     seed: int | None,
     hf_token: str | None,
     humanize: float,
+    unsharp: float,
     max_resolution: int,
+    min_resolution: int,
     controlnet_scale: float,
     restore_faces: bool,
     restore_faces_weight: float,
@@ -558,7 +574,9 @@ def cmd_invisible(
         guidance_scale=None,
         seed=seed,
         humanize=humanize,
+        unsharp=unsharp,
         max_resolution=max_resolution,
+        min_resolution=min_resolution,
         vendor=vendor,
         restore_faces=restore_faces,
         restore_faces_weight=restore_faces_weight,
@@ -738,6 +756,8 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
 )
 @_controlnet_scale_option
 @_restore_faces_options
+@_min_resolution_option
+@_unsharp_option
 @click.pass_context
 def cmd_all(
     ctx: click.Context,
@@ -753,7 +773,9 @@ def cmd_all(
     seed: int | None,
     hf_token: str | None,
     humanize: float,
+    unsharp: float,
     max_resolution: int,
+    min_resolution: int,
     controlnet_scale: float,
     restore_faces: bool,
     restore_faces_weight: float,
@@ -852,7 +874,9 @@ def cmd_all(
                 num_inference_steps=steps,
                 seed=seed,
                 humanize=humanize,
+                unsharp=unsharp,
                 max_resolution=max_resolution,
+                min_resolution=min_resolution,
                 vendor=vendor,
                 restore_faces=restore_faces,
                 restore_faces_weight=restore_faces_weight,
@@ -907,7 +931,9 @@ def _process_batch_image(
     seed: int | None,
     hf_token: str | None,
     humanize: float,
+    unsharp: float = 0.0,
     max_resolution: int = 0,
+    min_resolution: int = 1024,
     restore_faces: bool = False,
     restore_faces_weight: float = 0.5,
 ) -> None:
@@ -969,7 +995,9 @@ def _process_batch_image(
                 num_inference_steps=steps,
                 seed=seed,
                 humanize=humanize,
+                unsharp=unsharp,
                 max_resolution=max_resolution,
+                min_resolution=min_resolution,
                 restore_faces=restore_faces,
                 restore_faces_weight=restore_faces_weight,
                 # Detect the vendor from the pristine original (`img_path`), not the
@@ -1030,6 +1058,8 @@ def _process_batch_image(
     help="Cap long side (px) before diffusion; 0 = native (best quality, like raiw.cc). Raise only on GPU/MPS OOM.",
 )
 @_restore_faces_options
+@_min_resolution_option
+@_unsharp_option
 @click.pass_context
 def cmd_batch(
     ctx: click.Context,
@@ -1044,7 +1074,9 @@ def cmd_batch(
     hf_token: str | None,
     inpaint: bool,
     humanize: float,
+    unsharp: float,
     max_resolution: int,
+    min_resolution: int,
     restore_faces: bool,
     restore_faces_weight: float,
 ) -> None:
@@ -1096,7 +1128,9 @@ def cmd_batch(
                     seed=seed,
                     hf_token=hf_token,
                     humanize=humanize,
+                    unsharp=unsharp,
                     max_resolution=max_resolution,
+                    min_resolution=min_resolution,
                     restore_faces=restore_faces,
                     restore_faces_weight=restore_faces_weight,
                 )
