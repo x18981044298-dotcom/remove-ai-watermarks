@@ -9,7 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
+from PIL import Image
 
 from remove_ai_watermarks.noai.progress import is_mps_error
 from remove_ai_watermarks.noai.utils import get_image_format, is_supported_format
@@ -298,3 +300,29 @@ class TestFp16VaeFix:
         from remove_ai_watermarks.noai.watermark_remover import _needs_fp16_vae_fix
 
         assert _needs_fp16_vae_fix("runwayml/stable-diffusion-v1-5", self.DEFAULT, is_fp16=True) is False
+
+
+class TestDegenerateOutputGuard:
+    """The fp16 black-output safety net (#29/#41): detect an all-black/NaN frame so
+    ``remove_watermark`` can retry in fp32. Pure image statistics, no model needed."""
+
+    def test_all_black_is_degenerate(self):
+        from remove_ai_watermarks.noai.watermark_remover import _is_degenerate_image
+
+        black = Image.fromarray(np.zeros((64, 64, 3), np.uint8))
+        assert _is_degenerate_image(black) is True
+
+    def test_normal_image_is_not_degenerate(self):
+        from remove_ai_watermarks.noai.watermark_remover import _is_degenerate_image
+
+        rng = np.random.default_rng(0)
+        normal = Image.fromarray(rng.integers(0, 256, (64, 64, 3), dtype=np.uint8))
+        assert _is_degenerate_image(normal) is False
+
+    def test_dark_but_textured_image_is_not_degenerate(self):
+        """A legitimately dark photo with real detail must NOT be flagged (variance guard)."""
+        from remove_ai_watermarks.noai.watermark_remover import _is_degenerate_image
+
+        rng = np.random.default_rng(1)
+        dark = Image.fromarray(rng.integers(0, 40, (64, 64, 3), dtype=np.uint8))
+        assert _is_degenerate_image(dark) is False
