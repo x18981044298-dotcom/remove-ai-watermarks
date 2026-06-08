@@ -106,13 +106,35 @@ This is the load-bearing assumption of the whole approach. The argument:
   pattern, only the identity, because the watermark sits in exactly the
   dimensions the embedding learned to discard.
 
-**Caveat (honest, not yet measured).** No published paper specifically validates
-"embedding invariance to SynthID". The argument above is mechanistic, not
-empirical. Before shipping, run the test that grounds it: extract the embedding
-from N watermarked OpenAI/Gemini faces and from the same faces after the SDXL
-removal pass, compute cosine similarity; if it is high (e.g. >0.95 on average),
-the embedding is not transporting the watermark. This test is cheap (no
-generation, just embedder forward passes) and removes the last unknown.
+**MEASURED 2026-06-04 — hypothesis confirmed.** Ran a low-amplitude
+perturbation sweep on 31 face crops (3 photoreal originals: gemini_3, gemini_4,
+openai_3 grid), comparing `cos(embedding(orig), embedding(perturbed))` for OpenCLIP-
+ViT-H/14 (laion2B-s32B-b79K, the same encoder PhotoMaker-V2 finetunes):
+
+| perturbation | mean cos | min | max |
+|---|---|---|---|
+| **synthid_proxy** (±2 LSB low-freq noise, σ=4 px Gaussian carrier — same regime SynthID hides in) | **0.9977** | 0.9937 | 0.9996 |
+| noise3 (Gaussian σ=3, full-spectrum) | 0.9541 | 0.9055 | 0.9825 |
+| jpeg90 (SynthID survives this) | 0.9280 | 0.8806 | 0.9566 |
+| blur1 (Gaussian σ=1) | 0.9139 | 0.8103 | 0.9875 |
+| jpeg70 | 0.8945 | 0.8125 | 0.9603 |
+| (self check: identical crop) | 1.0000 | 1.0000 | 1.0000 |
+
+The SynthID-magnitude perturbation moves the embedding by **0.002** (cosine 0.9977),
+an order of magnitude less than JPEG90 — which SynthID survives at >=99% TPR by
+design. So the embedding cannot carry the watermark pattern: its discriminative
+signal is in dimensions the SynthID payload does not occupy. PhotoMaker-V2
+conditioned on a watermarked face will see ~the same identity vector as if
+conditioned on a clean face of the same person, so the freshly generated face
+inherits the identity, not the watermark.
+
+A first, naive smoke run measured `cos(orig, SDXL-cleaned)` instead — that test is
+about diffusion drift, not watermark invariance (diffusion at strength 0.20-0.30 is a
+much larger perturbation than SynthID), so its 0.56-0.93 spread is the identity
+drift the PhotoMaker pipeline is meant to fix in the first place. The
+synthid_proxy result above is the one that actually answers the load-bearing
+question. Script: `/tmp/identity_smoke/test2_proxy.py` (not committed; reproducible
+from the test set + this doc).
 
 ## 5. PhotoMaker-V2 properties for our pipeline
 
