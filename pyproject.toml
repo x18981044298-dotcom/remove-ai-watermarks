@@ -76,22 +76,26 @@ lama = [
     "onnxruntime>=1.16.0",
     "huggingface-hub>=0.20.0",
 ]
-# Optional GFPGAN face-polish post-pass (commercial-safe: GFPGAN Apache-2.0 +
-# RetinaFace MIT). Polishes face detail in the DIFFUSION-CLEANED image (not the
-# original) using GFPGAN's StyleGAN2 prior, so SynthID is NOT re-introduced -- the
-# input pixels GFPGAN derives from are already SynthID-free. This is the shipped path
-# because the alternative we wanted (PhotoMaker-V1 identity-as-embedding) has
-# significant upstream / diffusers-version compatibility issues; see
-# `src/remove_ai_watermarks/face_restore.py` and
-# `docs/synthid-robust-identity-research.md`. gfpgan/basicsr/facexlib are an OLD
-# ecosystem and pin numpy<2: scipy<1.18 (>=1.18 uses np.long, gone in numpy 1.24-1.26)
-# and numba<0.60. Kept OUT of `all` (heavy + model download).
-restore = [
-    "gfpgan>=1.3.8",
-    "facexlib>=0.3.0",
-    "basicsr>=1.4.2",
-    "scipy<1.18",
-    "numba<0.60",
+# **NON-COMMERCIAL.** Optional PhotoMaker-V2 SynthID-robust face-identity post-pass.
+# PhotoMaker-V2's ID encoder pulls an InsightFace ArcFace embedding at runtime, and
+# the pretrained InsightFace model packs (antelopev2, buffalo_l) are released under a
+# non-commercial / research-only license. A paid service (raiw.cc, any monetized SaaS)
+# MUST NOT use this extra. See `src/remove_ai_watermarks/photomaker_restore.py` and
+# `docs/synthid-robust-identity-research.md`. The PhotoMaker adapter weights
+# (photomaker-v2.bin) are Apache-2.0 and download on first use; the InsightFace model
+# packs download on first FaceAnalysis() (only triggered inside PhotoMaker's V2 forward).
+# Pins beyond the upstream PhotoMaker package itself patch missing declarations that
+# would otherwise break the load chain (verified empirically via the Modal cert sweep
+# 2026-06-04): einops (used in forward), peft (required by diffusers.fuse_lora),
+# onnxruntime (transitive via insightface), and insightface itself (required for the
+# package's __init__.py to even import).
+photomaker = [
+    "photomaker @ git+https://github.com/TencentARC/PhotoMaker.git",
+    "huggingface-hub>=0.20.0",
+    "einops>=0.7.0",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.16.0",
+    "peft>=0.10.0",
 ]
 # Optional pre-diffusion super-resolution for small inputs (Real-ESRGAN). Loaded via
 # spandrel (MIT) -- a pure model-loader with NO basicsr dependency (it pulls only
@@ -120,14 +124,6 @@ all = ["remove-ai-watermarks[gpu,detect,trustmark,lama,dev]"]
 # stable safetensors pin (or once safetensors 0.8.0 stable is out).
 [tool.uv]
 prerelease = "allow"
-
-# basicsr 1.4.2 (pulled by the `restore` GFPGAN extra) ships sdist-only and its
-# setup.py get_version() reads basicsr/version.py in a way that newer setuptools
-# (>= 69) breaks with ``KeyError: '__version__'`` under isolated PEP 517 builds.
-# Pin an old setuptools as its build dependency so the sdist builds; this is
-# scoped to basicsr and does not affect the rest of the resolution.
-[tool.uv.extra-build-dependencies]
-basicsr = ["setuptools<69"]
 
 # PyTorch Intel-GPU (XPU) wheel index. ``explicit = true`` keeps it inert for
 # the default CPU/CUDA install: uv consults it only when a torch install
@@ -158,6 +154,12 @@ Repository = "https://github.com/wiltodelta/remove-ai-watermarks"
 # `requires = ["hatchling"]` once that release confirms the path.
 requires = ["hatchling<1.31"]
 build-backend = "hatchling.build"
+
+# Allow the `photomaker` extra to reference the upstream git URL directly (the
+# TencentARC/PhotoMaker package is not on PyPI). The extra itself is NON-COMMERCIAL
+# (see the photomaker block above and `photomaker_restore.py`).
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/remove_ai_watermarks"]

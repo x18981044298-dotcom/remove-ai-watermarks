@@ -30,23 +30,39 @@ is the correct commercial-safe target: its `PhotoMakerIDEncoder` (model.py)
 forward takes only `(id_pixel_values, prompt_embeds, class_tokens_mask)` -- no
 ArcFace branch -- so identity is CLIP-only.
 
-**Status notice (2026-06-04, end of session).** Even on V1, the cert sweep hit a
-cascade of upstream compatibility issues with the diffusers version we ship
-(0.38): missing `einops` declaration, missing `peft` declaration, default
-`pm_version='v2'` that mis-loads V1 weights into the V2 encoder, custom
-`id_encoder` left on CPU after `pipe.to(device)`, and a CFG-batch tensor-shape
-mismatch in the denoising loop (`Expected size 2 but got size 1`). 7 cascading
-fixes did not get the pipeline running end-to-end. The PhotoMaker `pipeline.py`
-header notes it was forked from diffusers v0.29.1; SDXL prompt-encoder handling
-changed significantly between 0.29 and 0.38, so making this work end-to-end is a
-proper fork or a diffusers downgrade -- both expensive. **The shipped path is
-GFPGAN on the diffusion-CLEANED image** (`face_restore.py`, the `restore`
-extra): a one-line change from the original GFPGAN-on-watermarked design that
-made the pass SynthID-safe by construction. Identity fidelity is lower than what
-a working identity-as-embedding stack would deliver, but the pipeline runs, the
-oracle is satisfied, and the dependency footprint is small. PhotoMaker remains
-the right north-star for a future identity-fidelity upgrade once the upstream
-compat work is done (or once a `diffusers ~0.29` forked pipeline is vendored).
+**Status notice (2026-06-04, end of session).** Two commercial-safe paths were
+tried and abandoned:
+
+1. **PhotoMaker-V1** (commercial-safe by license but blocked by upstream compat).
+   The cert sweep hit a cascade of upstream compatibility issues with the diffusers
+   version we ship (0.38): missing `einops` declaration, missing `peft` declaration,
+   default `pm_version='v2'` that mis-loads V1 weights into the V2 encoder, custom
+   `id_encoder` left on CPU after `pipe.to(device)`, and a CFG-batch tensor-shape
+   mismatch in the denoising loop (`Expected size 2 but got size 1`). 7 cascading
+   fixes did not get the pipeline running end-to-end. The PhotoMaker `pipeline.py`
+   header notes it was forked from diffusers v0.29.1; SDXL prompt-encoder handling
+   changed significantly between 0.29 and 0.38.
+2. **GFPGAN on the diffusion-CLEANED image** (commercial-safe, but no identity
+   recovery). A one-line change made it SynthID-safe (input pixels are already
+   clean, so the partial blend cannot transport the watermark), but visual
+   inspection of the cert output showed it only polished the already-drifted face
+   without actually restoring identity. Trade-off was real and the value too low
+   to keep.
+
+**The shipped path is PhotoMaker-V2** (`photomaker_restore.py`, the `photomaker`
+extra). V2 uses a DUAL ID encoder (CLIP image features + ArcFace embedding),
+which delivers true identity-from-embedding face regeneration. The cost is that
+the ArcFace embedding comes from InsightFace's `antelopev2`/`buffalo_l` model
+packs, which are released under a non-commercial / research-only license. **So
+the shipped restore path is NON-COMMERCIAL.** raiw.cc and any other monetized
+deployment must NOT install the `photomaker` extra. The CLI flag and module
+docstring both call this out at every entry point.
+
+A future commercial-safe path would need either (a) the PhotoMaker upstream to
+land its diffusers 0.38 compat fix so V1 can run, or (b) an equally good
+ArcFace-class face-recognition model released under a permissive license that
+PhotoMaker-V2 can be retargeted to. Neither is on a near-term horizon as of
+this writing.
 
 ## 1. Why identity-by-embedding (not by pixel) is the only SynthID-robust path
 

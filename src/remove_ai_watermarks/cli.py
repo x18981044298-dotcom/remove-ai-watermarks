@@ -238,16 +238,18 @@ def _warn_if_esrgan_unavailable(upscaler: str) -> None:
 def _restore_faces_options(f: Any) -> Any:
     """Attach the face-restoration flag to an invisible-pipeline command.
 
-    The post-pass runs GFPGAN on the DIFFUSION-CLEANED image (not the original), so
-    SynthID is not re-introduced (the input pixels GFPGAN derives from are already
-    SynthID-free). See ``face_restore.py``.
+    The post-pass uses PhotoMaker-V2 to regenerate each face from a CLIP+ArcFace
+    embedding. **NON-COMMERCIAL** -- PhotoMaker-V2 pulls InsightFace antelopev2/
+    buffalo_l model packs at runtime, which are research-only. A paid service
+    (raiw.cc, any monetized SaaS) MUST NOT use this flag.
     """
     return click.option(
         "--restore-faces/--no-restore-faces",
         default=False,
-        help="EXPERIMENTAL, opt-in. Polish face detail with a GFPGAN post-pass on the "
-        "cleaned image when faces are present (needs the 'restore' extra); off by default, "
-        "auto-skips when no face is detected or the extra is absent.",
+        help="EXPERIMENTAL, opt-in, **NON-COMMERCIAL** -- needs the 'photomaker' extra "
+        "which pulls non-commercial InsightFace model packs. Restores face identity via "
+        "PhotoMaker-V2 (CLIP+ArcFace embedding -> fresh face); off by default, auto-skips "
+        "when no face is detected or the extra is absent.",
     )(f)
 
 

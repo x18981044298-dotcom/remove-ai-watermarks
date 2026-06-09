@@ -180,11 +180,11 @@ class InvisibleEngine:
             guidance_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility.
             humanize: Intensity of Analog Humanizer film grain (0 = off).
-            restore_faces: EXPERIMENTAL, opt-in (default False). Run the GFPGAN
-                face-polish post-pass when faces are present (needs the ``restore``
-                extra). Runs on the diffusion-CLEANED image (not the original), so
-                SynthID is not re-introduced. Auto-skips with a debug log when the
-                extra is absent or no face is detected.
+            restore_faces: EXPERIMENTAL, opt-in (default False). **NON-COMMERCIAL.**
+                Run the PhotoMaker-V2 face-identity post-pass when faces are present
+                (needs the ``photomaker`` extra, which pulls non-commercial InsightFace
+                model packs). Auto-skips with a debug log when the extra is absent or no
+                face is detected. See ``photomaker_restore.py`` for the legal notice.
             unsharp: Final unsharp-mask sharpening strength (0 = off, default).
                 Applied last (after face restoration) to counter the soft,
                 over-smoothed look of the diffusion + restoration; ~0.5-0.8 is a
@@ -316,7 +316,7 @@ class InvisibleEngine:
             # GFPGAN derives from are already SynthID-free). Auto-skips when faces are
             # absent or the optional `restore` extra is not installed.
             if restore_faces:
-                self._restore_faces(out_path)
+                self._restore_faces_photomaker(out_path, image, seed)
 
             # Final sharpening, LAST so it crisps the face-restored result too (a
             # pre-restore sharpen would be smoothed back over by the face pass).
@@ -355,24 +355,29 @@ class InvisibleEngine:
             if _tmp_path.exists():
                 _tmp_path.unlink()
 
-    def _restore_faces(self, out_path: Path) -> None:
-        """Run the GFPGAN face-polish post-pass on the cleaned ``out_path``.
+    def _restore_faces_photomaker(
+        self,
+        out_path: Path,
+        original_image: Any,
+        seed: int | None,
+    ) -> None:
+        """Run the PhotoMaker-V2 face-identity post-pass on the cleaned ``out_path``.
 
-        SynthID-safe: GFPGAN is run on the diffusion-CLEANED image (not the original),
-        so the partial pixel-blend it does at fidelity weight 0.5 cannot re-introduce
-        the watermark -- the input pixels GFPGAN derives from are already SynthID-free.
-        Best-effort: any failure logs a warning and leaves the un-restored cleaned
-        output in place; a missing ``restore`` extra is logged at debug and skipped
-        (the flag must never error when the extra is absent or no face is present).
+        **NON-COMMERCIAL** (see ``photomaker_restore.py``). PhotoMaker carries identity
+        in a CLIP+ArcFace embedding and regenerates fresh face pixels conditioned on
+        it, so the watermark is not transported. Best-effort: any failure (missing
+        extra, model load, runtime error) logs a warning and leaves the un-restored
+        cleaned output in place.
         """
-        from remove_ai_watermarks import face_restore
+        from remove_ai_watermarks import photomaker_restore
 
-        if not face_restore.is_available():
-            logger.debug("restore_faces requested but the 'restore' extra is not installed; skipping")
+        if not photomaker_restore.is_available():
+            logger.debug("restore_faces requested but the 'photomaker' extra is not installed; skipping")
             return
 
         try:
             import cv2
+            import numpy as np
 
             from remove_ai_watermarks import image_io
 
@@ -381,13 +386,15 @@ class InvisibleEngine:
                 logger.warning("restore_faces: could not read cleaned output %s; skipping", out_path)
                 return
 
-            if self._progress_callback:
-                self._progress_callback("Polishing face identity (GFPGAN on cleaned image)...")
-            # original_bgr is unused (GFPGAN runs on cleaned_bgr); pass an empty array
-            # for positional API stability with the legacy signature.
-            import numpy as np
+            original_rgb = original_image.convert("RGB")
+            original_bgr = cv2.cvtColor(np.array(original_rgb), cv2.COLOR_RGB2BGR)
+            cleaned_size = (cleaned_bgr.shape[1], cleaned_bgr.shape[0])
+            if (original_bgr.shape[1], original_bgr.shape[0]) != cleaned_size:
+                original_bgr = cv2.resize(original_bgr, cleaned_size, interpolation=cv2.INTER_LANCZOS4)
 
-            restored = face_restore.restore_faces(np.empty((0, 0, 3), dtype=np.uint8), cleaned_bgr)
+            if self._progress_callback:
+                self._progress_callback("Restoring face identity (PhotoMaker-V2 post-pass)...")
+            restored = photomaker_restore.restore_faces_photomaker(original_bgr, cleaned_bgr, seed=seed)
             image_io.imwrite(out_path, restored)
         except Exception as e:
             logger.warning("restore_faces post-pass failed (%s); keeping un-restored output", e)
