@@ -18,40 +18,52 @@ The default ``--restore-faces-method`` is ``instantid`` (this module). The
 alternative ``photomaker`` is also non-commercial. There is no commercial-safe
 ArcFace-grade identity-preservation stack for SDXL today.
 
-Architecture (vs PhotoMaker-V2):
-- PhotoMaker-V2 conditions on a CLIP+ArcFace embedding and runs as txt2img with
-  no spatial control. Identity drift on Asian male faces is documented upstream
-  and was visually confirmed in our cert sweep.
-- InstantID conditions on the ArcFace embedding via cross-attention (IP-Adapter
-  style) AND uses a separate landmark ControlNet (5 facial keypoints) for weak
-  pose control. The semantic identity branch and spatial landmark branch are
-  decoupled, which gives stronger identity fidelity per the InstantID paper
-  (arXiv:2401.07519) and our research report. Critically, NO original face
-  pixels enter the diffusion -- only the ArcFace embedding (semantic) and the
-  rendered landmark stick figure (geometry, content-free) -- so SynthID is not
-  transported.
+Architecture (vs the earlier txt2img variant):
+- The earlier (txt2img) integration generated each face from scratch in a fresh
+  1024 scene with InstantID's standard pipeline. That produced studio-portrait
+  faces with the wrong lighting / head angle for the surrounding scene; on
+  group photos the per-face composites read as patchwork even after color
+  matching and elliptical alphas.
+- This (img2img on cleaned) integration feeds the CLEANED face crop as the
+  img2img source. Diffusion sees the scene context (shoulders, hair edges,
+  lighting, shadow direction) directly and harmonises the regenerated face
+  with it. Identity still comes through the ArcFace embedding +
+  landmark-ControlNet, which are semantic / pure-geometry and carry no
+  watermark.
+
+SynthID safety (load-bearing for raiw.cc):
+- img2img source = CLEANED crop. Cleaned image is already oracle-verified
+  SynthID-free at our controlnet strength; cropping is a subset operation that
+  preserves that property.
+- ArcFace embedding = from the ORIGINAL face crop (sharper identity, but the
+  embedding is semantic 512-d, no pixel content).
+- Landmark stick figure = pure colour-coded geometry rendered from kps; no
+  source pixels.
+- img2img diffusion adds noise to the cleaned source then denoises with
+  ControlNet + IP-Adapter conditioning. Any residual high-frequency pattern
+  in the cleaned crop is destroyed by that noise injection at the strengths we
+  use.
+- We must NEVER feed the original image as img2img source (would re-introduce
+  SynthID outside the diffusion footprint at strength < 1). The code only ever
+  reads pixels from ``cleaned_bgr`` into ``image=`` -- the original is used
+  for the embedding + kps only.
 
 Pipeline this module wires:
   1. Detect faces in the CLEANED image (YuNet via ``auto_config``).
-  2. For each face: take the SAME box from the ORIGINAL image, extract its
-     ArcFace embedding + 5 keypoints via InsightFace ``FaceAnalysis(antelopev2)``.
-  3. Render the keypoints as a stick figure (``draw_kps`` from upstream).
-  4. Call the InstantID community pipeline
-     (``StableDiffusionXLInstantIDPipeline``) with the ArcFace embedding as
-     ``image_embeds=`` and the landmark image as ``image=`` (the ControlNet
-     conditioning).
-  5. Feather-composite the regenerated face into the cleaned image.
+  2. For each face: square-crop the SAME box from BOTH the original (for
+     ArcFace + kps) and the cleaned image (for img2img source). Resize both
+     to 1024x1024.
+  3. Render the kps as a stick figure (the ControlNet conditioning image).
+  4. Call the InstantID img2img pipeline
+     (``StableDiffusionXLInstantIDImg2ImgPipeline``) with ``image`` = cleaned
+     crop, ``control_image`` = landmark, ``image_embeds`` = ArcFace, and
+     ``strength`` = ~0.55. The output 1024 is a face that fits the scene.
+  5. Elliptical-alpha + colour-match composite into the cleaned image.
 
 Requires the optional ``instantid`` extra: ``pip install
-'remove-ai-watermarks[instantid]'``. Weights download on first use; never
-bundled. The InstantID adapter weights (IdentityNet ControlNet +
-``ip-adapter.bin``) are Apache-2.0; the runtime InsightFace ``antelopev2`` model
-pack is non-commercial.
-
-Multi-face: like PhotoMaker, this module loops over face boxes and composites
-back. InstantID's strength is single-portrait; for group photos identity
-fidelity per-face is preserved but the composite still uses the cleaned-image
-geometry as the canvas.
+'remove-ai-watermarks[instantid]'``. Weights download on first use; the
+upstream img2img pipeline file (not on PyPI) is cached from
+``raw.githubusercontent.com`` on first run.
 """
 
 # cv2/torch/diffusers boundary: relax unknown-type rules for this file only.
@@ -78,6 +90,14 @@ logger = logging.getLogger(__name__)
 _INSTANTID_REPO = "InstantX/InstantID"
 _INSTANTID_CONTROLNET_SUBFOLDER = "ControlNetModel"
 _INSTANTID_IP_ADAPTER = "ip-adapter.bin"
+
+# Upstream InstantID img2img pipeline source. Not on PyPI, not on HF Hub at any path
+# diffusers can auto-load -- the file lives in the InstantID GitHub repo. We download
+# it once to a cache dir and pass it as ``custom_pipeline=<path>`` to diffusers.
+_INSTANTID_IMG2IMG_URL = (
+    "https://raw.githubusercontent.com/instantX-research/InstantID/"
+    "main/pipeline_stable_diffusion_xl_instantid_img2img.py"
+)
 
 # SDXL base shared with the main pipeline (same checkpoint as `default`/`controlnet`).
 _SDXL_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -123,6 +143,27 @@ def _select_device() -> str:
     except Exception as e:
         logger.debug("instantid_restore: device probe failed (%s); using CPU", e)
     return "cpu"
+
+
+def _fetch_img2img_pipeline_file() -> Path:
+    """Cache the InstantID img2img pipeline source file locally on first use.
+
+    The file lives in the InstantX GitHub repo (not on PyPI, not on HF Hub at any
+    path diffusers can auto-load). We fetch the raw URL once into the package's
+    HuggingFace cache so subsequent loads hit disk. Returns the path to feed to
+    ``DiffusionPipeline.from_pretrained(custom_pipeline=...)``.
+    """
+    import os
+    import urllib.request
+
+    cache_root = Path(os.environ.get("HF_HOME") or Path.home() / ".cache" / "huggingface")
+    cache_dir = cache_root / "remove_ai_watermarks" / "instantid"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / "pipeline_stable_diffusion_xl_instantid_img2img.py"
+    if not target.exists() or target.stat().st_size < 50_000:
+        logger.info("instantid_restore: fetching img2img pipeline source from %s", _INSTANTID_IMG2IMG_URL)
+        urllib.request.urlretrieve(_INSTANTID_IMG2IMG_URL, target)  # noqa: S310 (HTTPS pinned)
+    return target
 
 
 def _ensure_antelopev2(root: Path) -> Path:
@@ -214,7 +255,7 @@ def _get_pipeline() -> Any:
 
             device = _select_device()
             dtype = torch.float16 if device == "cuda" else torch.float32
-            logger.info("instantid_restore: loading SDXL+InstantID on %s (%s)", device, dtype)
+            logger.info("instantid_restore: loading SDXL+InstantID img2img on %s (%s)", device, dtype)
 
             # IdentityNet ControlNet weights.
             controlnet = ControlNetModel.from_pretrained(
@@ -222,13 +263,19 @@ def _get_pipeline() -> Any:
                 subfolder=_INSTANTID_CONTROLNET_SUBFOLDER,
                 torch_dtype=dtype,
             )
-            # SDXL base + InstantID community pipeline (txt2img w/ IdentityNet ControlNet
-            # + IP-Adapter cross-attention conditioned on the ArcFace embedding).
+            # Upstream InstantID img2img pipeline (StableDiffusionXLInstantIDImg2ImgPipeline).
+            # Lets us feed the cleaned face crop as the diffusion source so the regenerated
+            # face inherits scene lighting / shadows / head angle from the cleaned context
+            # (vs the txt2img variant which generates a studio portrait from scratch).
+            # Critical SynthID-safety property: the ``image`` arg MUST be the CLEANED crop,
+            # never the original -- the original carries the watermark and img2img at
+            # strength < 1 preserves some input pixel structure. The ArcFace embedding is
+            # semantic (no pixel content), so taking it from the original is fine.
             pipe = DiffusionPipeline.from_pretrained(
                 _SDXL_MODEL_ID,
                 controlnet=controlnet,
                 torch_dtype=dtype,
-                custom_pipeline="pipeline_stable_diffusion_xl_instantid",
+                custom_pipeline=str(_fetch_img2img_pipeline_file()),
             )
             pipe.to(device)
             # IP-Adapter weights that wire the ArcFace embedding into cross-attention.
@@ -312,6 +359,7 @@ def restore_faces_instantid(
     num_inference_steps: int = 30,
     guidance_scale: float = 5.0,
     controlnet_conditioning_scale: float = 0.8,
+    img2img_strength: float = 0.55,
     seed: int | None = None,
     detect_faces_fn: Any | None = None,
 ) -> NDArray[Any]:
@@ -320,15 +368,16 @@ def restore_faces_instantid(
     Flow:
       1. Detect faces in ``cleaned_bgr`` (YuNet via ``auto_config`` by default;
          override via ``detect_faces_fn`` for tests).
-      2. For each face: take the SAME box from ``original_bgr`` -> square crop ->
-         InsightFace extracts ArcFace embedding + 5 keypoints -> ``_draw_kps``
-         renders the landmark stick figure -> InstantID pipeline generates a
-         fresh face conditioned on the embedding and the landmark control image.
-      3. Feather-composite each regenerated face into ``cleaned_bgr``.
+      2. For each face: square-crop the SAME box from BOTH images (original ->
+         ArcFace + kps; cleaned -> img2img source). Resize both to 1024.
+      3. Render kps as a landmark stick figure (the ControlNet conditioning).
+      4. Run InstantID img2img: ``image`` = cleaned crop, ``control_image`` =
+         landmark, ``image_embeds`` = ArcFace embedding from the original.
+      5. Elliptical-alpha + colour-match composite into the cleaned image.
 
-    Faces are read from ``original_bgr`` for the ArcFace embedding + landmarks, but
-    the OUTPUT pixels are diffusion-fresh (ArcFace embedding is semantic; landmark
-    image is pure geometry), so SynthID is not transported.
+    SynthID safety: ``image`` is the CLEANED crop (already oracle-clean); the
+    original is read for the embedding and kps only (semantic / geometry, no
+    pixel content). See the module docstring.
 
     ``detect_faces_fn`` returns a list of ``(x, y, w, h)`` boxes given a BGR image.
     """
@@ -365,21 +414,43 @@ def restore_faces_instantid(
     if seed is not None:
         generator = torch.Generator(device=pipeline.device).manual_seed(seed)
 
+    h_c, w_c = cleaned_bgr.shape[:2]
     restored: list[tuple[NDArray[Any], tuple[int, int, int, int]]] = []
     for box in boxes:
-        id_crop_bgr, _square_box = _face_crop_square(original_bgr, box)
-        if id_crop_bgr.size == 0:
+        # Square crop with the SAME geometry from both the original (-> ArcFace
+        # embedding + landmark kps -- semantic / pure-geometry, SynthID can't ride
+        # either) AND the cleaned image (-> img2img source -- SynthID-safe because
+        # the cleaned image is already oracle-verified clean and any residual
+        # high-frequency pattern would be destroyed by the noise injection at our
+        # strength setting). _face_crop_square gives a 2x-padded square box around
+        # the face -- enough scene context so the img2img harmonises lighting and
+        # head angle with the surroundings.
+        original_crop_bgr, square_box = _face_crop_square(original_bgr, box)
+        sx1, sy1, sx2, sy2 = square_box
+        sx1c, sy1c = max(0, sx1), max(0, sy1)
+        sx2c, sy2c = min(w_c, sx2), min(h_c, sy2)
+        if original_crop_bgr.size == 0 or sx2c <= sx1c or sy2c <= sy1c:
             continue
+        cleaned_crop_bgr = cleaned_bgr[sy1c:sy2c, sx1c:sx2c]
+        if cleaned_crop_bgr.shape[:2] != original_crop_bgr.shape[:2]:
+            # Edge effect at image border -- pad cleaned crop to match the original
+            # crop dimensions so InsightFace / the pipeline see the same shape.
+            cleaned_crop_bgr = cv2.resize(
+                cleaned_crop_bgr,
+                (original_crop_bgr.shape[1], original_crop_bgr.shape[0]),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
 
-        # Resize the crop to the InstantID target so InsightFace + the pipeline both
-        # work in the same coordinate space.
-        crop_resized = cv2.resize(
-            id_crop_bgr, (_INSTANTID_FACE_SIZE, _INSTANTID_FACE_SIZE), interpolation=cv2.INTER_LANCZOS4
+        # Resize both crops to the SDXL working size.
+        original_resized = cv2.resize(
+            original_crop_bgr, (_INSTANTID_FACE_SIZE, _INSTANTID_FACE_SIZE), interpolation=cv2.INTER_LANCZOS4
+        )
+        cleaned_resized = cv2.resize(
+            cleaned_crop_bgr, (_INSTANTID_FACE_SIZE, _INSTANTID_FACE_SIZE), interpolation=cv2.INTER_LANCZOS4
         )
 
-        # InsightFace expects BGR. It returns embedding + 5 keypoints per detected face.
-        # Pick the largest face in the crop (sorted by bbox area).
-        face_infos = face_analyser.get(crop_resized)
+        # ArcFace embedding + 5 kps from the ORIGINAL face (sharper identity).
+        face_infos = face_analyser.get(original_resized)
         if not face_infos:
             logger.debug("instantid_restore: InsightFace did not find a face in the crop; skipping")
             continue
@@ -393,11 +464,22 @@ def restore_faces_instantid(
         # Render the landmark stick figure at the same size as the generation target.
         landmark_img = _draw_kps((_INSTANTID_FACE_SIZE, _INSTANTID_FACE_SIZE), face_kps)
 
+        # img2img call: source = CLEANED crop (SynthID-safe), control = landmark
+        # geometry, identity = ArcFace embedding from original. Strength controls
+        # how much of the cleaned input structure survives -- low enough (~0.55)
+        # to keep the head angle / lighting / shoulders coherent with the rest of
+        # the cleaned image, high enough that the face pixels are diffusion-fresh
+        # and InstantID actually injects identity.
+        from PIL import Image
+
+        cleaned_pil = Image.fromarray(cv2.cvtColor(cleaned_resized, cv2.COLOR_BGR2RGB))
         out = pipeline(
             prompt=_INSTANTID_PROMPT,
             negative_prompt=_INSTANTID_NEGATIVE,
+            image=cleaned_pil,
+            control_image=landmark_img,
             image_embeds=face_emb,
-            image=landmark_img,
+            strength=img2img_strength,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
@@ -406,50 +488,17 @@ def restore_faces_instantid(
         gen_rgb = out.images[0]
         gen_bgr = cv2.cvtColor(np.array(gen_rgb), cv2.COLOR_RGB2BGR)
 
-        # Multi-face anti-patchwork: each gen_bgr is a fresh 1024x1024 SCENE with a
-        # face in it. Compositing the whole 1024 frame into the original face's
-        # square_box pulls regenerated BACKGROUND pixels into the cleaned image
-        # (different backgrounds per face -> patchwork on group photos). Detect
-        # where the face actually landed in gen_bgr, crop tightly to it, and place
-        # it at the ORIGINAL face bbox (not the 2x square_box). The composite then
-        # only touches face pixels and the background of the cleaned canvas is
-        # preserved.
-        gen_face_infos = face_analyser.get(gen_bgr)
-        if gen_face_infos:
-            gf = max(
-                gen_face_infos,
-                key=lambda x: (x["bbox"][2] - x["bbox"][0]) * (x["bbox"][3] - x["bbox"][1]),
-            )
-            gx1, gy1, gx2, gy2 = (int(v) for v in gf["bbox"])
-            gw, gh = gx2 - gx1, gy2 - gy1
-            gcx, gcy = gx1 + gw // 2, gy1 + gh // 2
-            # Match the input crop padding (pad=0.5 default of _face_crop_square,
-            # which gives a side of ~2x the face size).
-            side = int(max(gw, gh) * 2.0)
-            half = side // 2
-            cx1 = max(0, gcx - half)
-            cy1 = max(0, gcy - half)
-            cx2 = min(gen_bgr.shape[1], gcx + half)
-            cy2 = min(gen_bgr.shape[0], gcy + half)
-            face_crop = gen_bgr[cy1:cy2, cx1:cx2]
-        else:
-            # Fallback: use the whole 1024 frame (matches the pre-2026-06-08 path).
-            logger.debug("instantid_restore: no face found in generated image; using full frame")
-            face_crop = gen_bgr
-
-        # Composite the tight face crop into a target box centered on the ORIGINAL
-        # face bbox, same pad as the input crop so the face fills its natural slot.
-        x, y, bw, bh = box
-        target_side = int(max(bw, bh) * 2.0)
-        thalf = target_side // 2
-        tcx, tcy = x + bw // 2, y + bh // 2
-        h_c, w_c = cleaned_bgr.shape[:2]
-        tx1 = max(0, tcx - thalf)
-        ty1 = max(0, tcy - thalf)
-        tx2 = min(w_c, tcx + thalf)
-        ty2 = min(h_c, tcy + thalf)
-
-        restored.append((face_crop, (tx1, ty1, tx2, ty2)))
+        # gen_bgr is at _INSTANTID_FACE_SIZE x _INSTANTID_FACE_SIZE. It represents
+        # the 2x-padded square_box content as regenerated by img2img -- so the face
+        # in it sits at the same RELATIVE position as in the cleaned input (img2img
+        # preserves structure). Composite the whole square back into the square_box
+        # location -- the cleaned-canvas elliptical alpha will keep the cleaned
+        # background outside the face oval, and the img2img harmonisation handles
+        # the seam INSIDE the oval (which is just face-on-face transition between
+        # diffusion-output and cleaned).
+        target_box = (sx1c, sy1c, sx2c, sy2c)
+        gen_target = cv2.resize(gen_bgr, (sx2c - sx1c, sy2c - sy1c), interpolation=cv2.INTER_LANCZOS4)
+        restored.append((gen_target, target_box))
 
     if not restored:
         return cleaned_bgr
