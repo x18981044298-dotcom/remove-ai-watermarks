@@ -61,6 +61,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from remove_ai_watermarks.photomaker_restore import _composite_faces, _face_crop_square
@@ -124,11 +125,56 @@ def _select_device() -> str:
     return "cpu"
 
 
+def _ensure_antelopev2(root: Path) -> Path:
+    """Materialize the antelopev2 pack at ``<root>/models/antelopev2/`` if absent.
+
+    InsightFace's built-in auto-download points at
+    ``github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip``
+    which has been broken since at least 2024 (verified upstream issue #2517,
+    #2766; explicitly called out in InstantID's README: "manually download via
+    this URL to models/antelopev2 as the default link is invalid"). Without the
+    five expected ``.onnx`` files in place, ``FaceAnalysis.prepare()`` errors
+    with ``assert 'detection' in self.models``.
+
+    We side-step the broken default by fetching the five files from a HuggingFace
+    mirror (``kidyu/antelopev2-for-InstantID-ComfyUI``) on first use. Returns the
+    target directory containing the .onnx files.
+    """
+    from huggingface_hub import hf_hub_download
+
+    target = root / "models" / "antelopev2"
+    target.mkdir(parents=True, exist_ok=True)
+    files = [
+        "1k3d68.onnx",
+        "2d106det.onnx",
+        "genderage.onnx",
+        "glintr100.onnx",
+        "scrfd_10g_bnkps.onnx",
+    ]
+    for fname in files:
+        dest = target / fname
+        if dest.exists() and dest.stat().st_size > 0:
+            continue
+        logger.info("instantid_restore: fetching antelopev2/%s from HF mirror", fname)
+        path = hf_hub_download(repo_id="kidyu/antelopev2-for-InstantID-ComfyUI", filename=fname)
+        # hf_hub_download caches under HF_HOME; symlink (or copy) into the
+        # InsightFace-expected layout.
+        if not dest.exists():
+            try:
+                dest.symlink_to(path)
+            except OSError:
+                import shutil
+
+                shutil.copy(path, dest)
+    return target
+
+
 def _get_face_analyser() -> Any:
     """Return the InsightFace FaceAnalysis singleton (antelopev2, non-commercial).
 
-    Triggers InsightFace's auto-download of the antelopev2 pack on first
-    instantiation. See the NON-COMMERCIAL notice at the top of the module.
+    Pre-downloads the antelopev2 pack from a HuggingFace mirror (the InsightFace
+    auto-download is broken). See the NON-COMMERCIAL notice at the top of the
+    module.
     """
     global _face_analyser
     if _face_analyser is not None:
@@ -139,10 +185,11 @@ def _get_face_analyser() -> Any:
             from insightface.app import FaceAnalysis
 
             providers = ["CUDAExecutionProvider"] if torch.cuda.is_available() else ["CPUExecutionProvider"]
-            # InstantID's upstream uses name='antelopev2' and root='./' (which puts
-            # the auto-downloaded pack under ./models/antelopev2/). Use the same root
-            # so the pack lands under the process cwd (Modal volume in prod).
-            fa = FaceAnalysis(name="antelopev2", root="./", providers=providers)
+            # InstantID's upstream uses name='antelopev2' and root='./'. Materialise
+            # the pack at the same place so FaceAnalysis finds it locally.
+            root = Path.cwd()
+            _ensure_antelopev2(root)
+            fa = FaceAnalysis(name="antelopev2", root=str(root), providers=providers)
             fa.prepare(ctx_id=0, det_size=(640, 640))
             _face_analyser = fa
     return _face_analyser
