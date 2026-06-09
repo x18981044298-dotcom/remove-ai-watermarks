@@ -278,12 +278,14 @@ def restore_faces_instantid(
     import torch
 
     if detect_faces_fn is None:
-        from remove_ai_watermarks.auto_config import _get_yunet
+        from pathlib import Path
 
-        det = _get_yunet()
+        from remove_ai_watermarks import auto_config as _ac
 
         def _default_detect(bgr: NDArray[Any]) -> list[tuple[int, int, int, int]]:
             h_d, w_d = bgr.shape[:2]
+            model = Path(_ac.__file__).parent / "assets" / "face_detection_yunet_2023mar.onnx"
+            det = cv2.FaceDetectorYN.create(str(model), "", (w_d, h_d), _ac._FACE_SCORE, 0.3, 5000)
             det.setInputSize((w_d, h_d))
             _, faces = det.detect(bgr)
             if faces is None:
