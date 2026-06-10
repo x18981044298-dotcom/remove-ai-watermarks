@@ -18,9 +18,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# Test results
-data/results/
-
 # SynthID corpus reference fills (synthetic black/white calibration tiles,
 # regenerable; the labeled pos/neg/cleaned images ARE tracked, see README)
 data/synthid_corpus/refs/
@@ -49,6 +46,7 @@ data/gemini_capture/captures/gemini_content_*.png
 data/samsung_capture/seeds/
 data/samsung_capture/captures/samsung_content_*
 
-# GFPGAN downloads its RetinaFace/parsing weights to a CWD ./gfpgan/weights/
-# working dir on first use (the restore extra). Runtime artifact, never committed.
+# Leftover GFPGAN weights dir from the retired face-restore experiments
+# (GFPGAN wrote RetinaFace/parsing weights to a CWD ./gfpgan/weights/ working
+# dir on first use). Runtime artifact, never committed.
 gfpgan/

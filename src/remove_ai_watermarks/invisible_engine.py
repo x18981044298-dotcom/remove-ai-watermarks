@@ -19,6 +19,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .noai.watermark_profiles import DEFAULT_MODEL_ID as DEFAULT_SDXL_MODEL_ID
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -37,9 +39,9 @@ logger = logging.getLogger(__name__)
 
 def is_available() -> bool:
     """Check if invisible watermark removal dependencies are installed."""
-    import importlib.util
+    from .optional_deps import module_available
 
-    return importlib.util.find_spec("diffusers") is not None and importlib.util.find_spec("torch") is not None
+    return module_available("diffusers", "torch")
 
 
 def _target_size(width: int, height: int, max_resolution: int, min_resolution: int = 0) -> tuple[int, int] | None:
@@ -83,7 +85,7 @@ class InvisibleEngine:
 
     # SDXL base is the default since May 2026; the vendor-adaptive strength
     # removes the current SynthID (see watermark_profiles + docs/synthid.md).
-    DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+    DEFAULT_MODEL_ID = DEFAULT_SDXL_MODEL_ID
 
     def __init__(
         self,
@@ -176,7 +178,7 @@ class InvisibleEngine:
             output_path: Output path (None = overwrite source).
             strength: Denoising strength (0.0-1.0). None -> the vendor-adaptive
                 default.
-            steps: Number of denoising steps.
+            num_inference_steps: Number of denoising steps.
             guidance_scale: Classifier-free guidance scale.
             seed: Random seed for reproducibility.
             humanize: Intensity of Analog Humanizer film grain (0 = off).

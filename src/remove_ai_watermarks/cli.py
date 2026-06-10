@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import click
 
 from remove_ai_watermarks import __version__, watermark_registry
+from remove_ai_watermarks.noai.constants import SUPPORTED_FORMATS
 from remove_ai_watermarks.noai.watermark_profiles import (
     resolve_strength,
     strength_default_help,
@@ -105,8 +106,6 @@ Table = _Table
 Progress = _Progress
 SpinnerColumn = BarColumn = TextColumn = TimeElapsedColumn = _column
 console = _Console()
-
-SUPPORTED_FORMATS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _setup_logging(verbose: bool) -> None:

@@ -50,9 +50,9 @@ _MATCH_SD1_FRAC = 0.92  # fraction of the 136 string bits that must match
 
 def is_available() -> bool:
     """True if the optional imwatermark decoder is installed."""
-    import importlib.util
+    from .optional_deps import module_available
 
-    return importlib.util.find_spec("imwatermark") is not None
+    return module_available("imwatermark")
 
 
 def _bits_match(value: int, ref: int, width: int = 48) -> int:

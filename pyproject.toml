@@ -91,18 +91,16 @@ esrgan = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
     "ruff>=0.4.0",
     "pyright>=1.1.0",
     "invisible-watermark>=0.2.0",
+    # maintain.sh helpers; they only support newer Pythons, so gate them by
+    # marker to keep the py3.10 resolution (and CI matrix) solvable.
+    "uv-outdated>=0.1.0; python_version >= '3.12'",
+    "uv-secure>=0.12.0; python_version >= '3.12'",
 ]
 all = ["remove-ai-watermarks[gpu,detect,trustmark,lama,dev]"]
-
-# diffusers 0.38.0 (security fix for GHSA-98h9-4798-4q5v) declares a dependency
-# on safetensors>=0.8.0rc0 — a pre-release. Allow pre-releases globally so the
-# resolver can satisfy that. Drop once diffusers publishes a release with a
-# stable safetensors pin (or once safetensors 0.8.0 stable is out).
-[tool.uv]
-prerelease = "allow"
 
 # PyTorch Intel-GPU (XPU) wheel index. ``explicit = true`` keeps it inert for
 # the default CPU/CUDA install: uv consults it only when a torch install
@@ -120,18 +118,7 @@ remove-ai-watermarks = "remove_ai_watermarks.cli:main"
 Repository = "https://github.com/wiltodelta/remove-ai-watermarks"
 
 [build-system]
-# Pin hatchling < 1.31. hatchling 1.30.0 made Metadata-Version 2.5 (PEP 794) the
-# default, which the twine bundled in pypa/gh-action-pypi-publish@release/v1 rejects
-# ("'2.5' is not a valid Metadata-Version"), failing the v0.8.3 PyPI upload
-# (2026-06-01) when unpinned requires = ["hatchling"] pulled 1.30.0. hatchling 1.30.1
-# reverted the default to 2.4 ("kept at 2.4 until more tools support 2.5"), and
-# 1.27-1.29 were always 2.4 -- so < 1.31 keeps `uv build` on a 2.4-emitting hatchling
-# (it resolves to the latest allowed, 1.30.1). The publish workflow now uses
-# `uv publish`, whose uploader accepts 2.5, so this pin is belt-and-suspenders, not
-# load-bearing: keeping it makes the first uv-publish release ship 2.4 metadata
-# (isolating the uploader swap from the metadata-version bump). Drop to
-# `requires = ["hatchling"]` once that release confirms the path.
-requires = ["hatchling<1.31"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Smaller scan_head window for the cheap marker checks (has_ai_metadata,
+# samsung_genai); the full-detail scans use scan_head's 1 MB default. Sharing
+# one constant also keeps both call sites on the same memoized cache entry.
+_QUICK_SCAN_BYTES = 512 * 1024
+
 # ── Known AI metadata keys ──────────────────────────────────────────
 
 AI_METADATA_KEYS: frozenset[str] = frozenset(
@@ -306,7 +311,7 @@ def has_ai_metadata(image_path: Path) -> bool:
 
     # Binary scan covers C2PA (PNG caBX, JPEG APP11, AVIF/HEIF/JXL uuid boxes)
     # and IPTC AI markers in XMP. First 512KB (plus late ISOBMFF provenance boxes).
-    data = scan_head(image_path, 512 * 1024)
+    data = scan_head(image_path, _QUICK_SCAN_BYTES)
     if c2pa_marker_in(data):
         return True
     if any(marker in data for marker in AIGC_MARKERS):
@@ -453,7 +458,7 @@ def samsung_genai(image_path: Path) -> int | None:
     gated on the ``PhotoEditor_Re_Edit_Data`` container so an incidental
     ``genAIType`` token cannot false-positive.
     """
-    head = scan_head(image_path, 512 * 1024)
+    head = scan_head(image_path, _QUICK_SCAN_BYTES)
     if _SAMSUNG_EDITOR_MARKER not in head:
         return None
     m = _SAMSUNG_GENAI_RE.search(head)

@@ -40,9 +40,9 @@ _tm_lock = threading.Lock()
 
 def is_available() -> bool:
     """True if the optional ``trustmark`` package is installed."""
-    import importlib.util
+    from .optional_deps import module_available
 
-    return importlib.util.find_spec("trustmark") is not None
+    return module_available("trustmark")
 
 
 def _decoder() -> Any:

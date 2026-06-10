@@ -8,8 +8,8 @@ The DEFAULT upscaler stays Lanczos (cv2, no deps); this is opt-in via the ``esrg
 extra and feeds the ``--upscaler esrgan`` path. ``spandrel`` is a pure model-loader
 (MIT) with NO basicsr dependency -- it pulls only torch/torchvision/safetensors/numpy/
 einops -- so it sidesteps the basicsr / ``torchvision.transforms.functional_tensor``
-breakage that the ``restore`` (GFPGAN) extra has to shim. Real-ESRGAN weights are
-BSD-3-Clause.
+breakage that the retired ``restore`` (GFPGAN) extra had to shim. Real-ESRGAN weights
+are BSD-3-Clause.
 
 CPU works but is slow on large inputs, so this is meant for the pre-diffusion upscale of
 SMALL inputs (and the GPU worker). On a memory-constrained host it is a no-op (the extra
@@ -21,7 +21,6 @@ is absent), and the caller falls back to Lanczos.
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingTypeArgument=false, reportMissingTypeStubs=false, reportMissingImports=false, reportArgumentType=false, reportAssignmentType=false, reportReturnType=false, reportCallIssue=false, reportIndexIssue=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportPrivateImportUsage=false
 from __future__ import annotations
 
-import importlib.util
 import logging
 import threading
 from pathlib import Path
@@ -45,7 +44,9 @@ _lock = threading.Lock()
 
 def is_available() -> bool:
     """True if the ``esrgan`` extra (spandrel + torch) is importable."""
-    return importlib.util.find_spec("spandrel") is not None and importlib.util.find_spec("torch") is not None
+    from .optional_deps import module_available
+
+    return module_available("spandrel", "torch")
 
 
 def _model_cache_path() -> Path:

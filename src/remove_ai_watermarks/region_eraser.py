@@ -82,9 +82,9 @@ def erase_cv2(
 
 def lama_available() -> bool:
     """True when the optional LaMa-ONNX backend can run (onnxruntime installed)."""
-    import importlib.util
+    from .optional_deps import module_available
 
-    return importlib.util.find_spec("onnxruntime") is not None
+    return module_available("onnxruntime")
 
 
 def _get_lama_session() -> object:

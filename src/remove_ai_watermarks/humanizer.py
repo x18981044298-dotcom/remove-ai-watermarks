@@ -2,8 +2,8 @@
 
 ``apply_analog_humanizer`` injects film grain and chromatic aberration to defeat
 digital AI-perfection classifiers (ported from NeuralBleach); ``unsharp_mask``
-counters the soft, over-smoothed look that diffusion + face-restoration leave
-behind (itself a common "this is AI" tell).
+counters the soft, over-smoothed look that the diffusion pass leaves behind
+(itself a common "this is AI" tell).
 """
 
 # cv2/numpy boundary: third-party libs ship no usable element types; relax the
@@ -63,7 +63,7 @@ def apply_analog_humanizer(image: NDArray, grain_intensity: float = 4.0, chromat
 def unsharp_mask(image: NDArray, amount: float = 0.5, sigma: float = 1.0) -> NDArray:
     """Sharpen via unsharp masking: ``out = image + amount * (image - blur(image))``.
 
-    Counters the soft, over-smoothed look of the diffusion + GFPGAN passes, which
+    Counters the soft, over-smoothed look of the diffusion pass, which
     reads as an AI tell. ``amount`` 0 = no-op (returns an unchanged copy); ~0.5-0.8
     is a safe range -- higher risks bright edge halos that are their own artifact.
     ``sigma`` is the Gaussian radius of the unsharp kernel.
