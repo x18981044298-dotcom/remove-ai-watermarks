@@ -36,6 +36,7 @@ from remove_ai_watermarks.noai.extractor import (
     has_ai_metadata,
 )
 from remove_ai_watermarks.noai.isobmff import (
+    blank_ai_exif_tokens,
     is_isobmff,
     strip_c2pa_boxes,
 )
@@ -365,6 +366,44 @@ class TestISOBMFF:
         cleaned, stripped = strip_c2pa_boxes(data)
         assert stripped == 0
         assert cleaned == data
+
+    @staticmethod
+    def _avif_with_exif(exif_0th: dict) -> bytes:
+        """A fake AVIF (ftyp + mdat) whose mdat carries an EXIF TIFF block, as a
+        HEIF/AVIF ``Exif`` meta-box item stores it (bytes in mdat)."""
+        import piexif
+
+        blob = piexif.dump({"0th": exif_0th})
+        mdat = struct.pack(">I", 8 + len(blob)) + b"mdat" + blob
+        return FTYP + mdat
+
+    def test_blank_ai_token_in_exif_item(self):
+        import piexif
+
+        data = self._avif_with_exif({piexif.ImageIFD.Software: b"DALL-E", piexif.ImageIFD.Make: b"Canon"})
+        out, blanked = blank_ai_exif_tokens(data)
+        assert blanked == 1
+        assert len(out) == len(data)  # same length -> box sizes / iloc stay valid
+        assert b"DALL-E" not in out  # AI token destroyed
+        assert b"Canon" in out  # camera tag preserved
+        # The TIFF structure still parses, with the AI value blanked and Make kept.
+        blob = out[out.index(b"Exif\x00\x00") + 6 :]
+        ifd = piexif.load(blob)["0th"]
+        assert ifd[piexif.ImageIFD.Software].strip() == b""
+        assert ifd[piexif.ImageIFD.Make] == b"Canon"
+
+    def test_blank_leaves_clean_exif_untouched(self):
+        import piexif
+
+        data = self._avif_with_exif({piexif.ImageIFD.Software: b"Adobe Photoshop", piexif.ImageIFD.Make: b"NIKON"})
+        out, blanked = blank_ai_exif_tokens(data)
+        assert blanked == 0
+        assert out == data  # no AI token -> byte-for-byte unchanged
+
+    def test_blank_no_exif_is_noop(self):
+        out, blanked = blank_ai_exif_tokens(FTYP + b"\x00\x00\x00\x0cmdat" + b"pixels!!")
+        assert blanked == 0
+        assert out == FTYP + b"\x00\x00\x00\x0cmdat" + b"pixels!!"
 
 
 class TestC2PAInvalidSignature:

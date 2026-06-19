@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -157,10 +157,11 @@ def strip_c2pa_boxes(data: bytes) -> tuple[bytes, int]:
     All other boxes (incl. ``mdat`` / codestream) are emitted verbatim, so pixel
     and audio data is preserved bit-for-bit. Non-ISOBMFF input is returned
     unchanged. Despite the name this also covers MP4/MOV/M4A video and audio
-    (all ISOBMFF). NOTE: this drops only top-level boxes. An AI-label XMP packet
-    stored as an *item inside the ``meta`` box* (typical for AVIF/HEIF) is handled
-    separately by :func:`blank_ai_xmp_packets`; an ``Exif`` meta-box item is still
-    not removed (would need meta-box surgery) and remains a documented limitation.
+    (all ISOBMFF). NOTE: this drops only top-level boxes. AI metadata stored as an
+    *item inside the ``meta`` box* (typical for AVIF/HEIF) is handled separately and
+    in place (same length, no offset rewrite): AI-label XMP by
+    :func:`blank_ai_xmp_packets`, and AI-generator tokens in an ``Exif`` item by
+    :func:`blank_ai_exif_tokens`.
     """
     if not is_isobmff(data):
         return data, 0
@@ -223,3 +224,64 @@ def blank_ai_xmp_packets(data: bytes) -> tuple[bytes, int]:
         return packet
 
     return _XMP_PACKET_RE.sub(_scrub, data), blanked
+
+
+# EXIF TIFF byte-order headers: little-endian (II 0x2a 0x00) and big-endian
+# (MM 0x00 0x2a). A HEIF/AVIF ``Exif`` meta-box item stores its TIFF block in
+# ``mdat`` / ``idat``, so the block (and these headers) appear in the raw bytes.
+_TIFF_HEADERS: tuple[bytes, ...] = (b"II\x2a\x00", b"MM\x00\x2a")
+# How far past a TIFF header an EXIF block plausibly extends; bounds the slice we
+# hand to piexif and search within (EXIF blocks are small kilobyte-scale).
+_EXIF_WINDOW = 256 * 1024
+
+
+def blank_ai_exif_tokens(data: bytes) -> tuple[bytes, int]:
+    """Overwrite (with spaces, in place) any AI-generator token in an EXIF block
+    stored as an ISOBMFF ``meta``-box ``Exif`` item; return ``(data, blanked_count)``.
+
+    HEIF/AVIF can carry EXIF as a ``meta``-box ``Exif`` item whose TIFF bytes live
+    in ``mdat`` / ``idat`` -- out of reach of the top-level box stripper, and (when
+    no pillow-heif plugin is installed) of the PIL EXIF reader too, so an AI
+    ``Software`` / ``Make`` / ``Artist`` / ``ImageDescription`` tag there survived
+    ``remove_ai_metadata`` (a documented gap). This locates EXIF TIFF blocks by
+    their byte-order header, **validates each with piexif** (so a coincidental
+    II/MM run in pixel data is ignored -- it will not parse as a TIFF IFD), and
+    overwrites any value carrying an ``AI_GENERATOR_TOKENS`` token with spaces of
+    the SAME length. Because the replacement is same-length, every box size and
+    ``iloc`` offset stays valid and the coded image is untouched -- only the AI tag
+    content is destroyed; camera/editor EXIF without an AI token is left intact
+    (mirrors ``metadata._scrub_ai_exif`` and ``blank_ai_xmp_packets``).
+    """
+    import piexif
+
+    from remove_ai_watermarks.noai.constants import AI_GENERATOR_TOKENS
+
+    ai_tags = (
+        piexif.ImageIFD.Software,
+        piexif.ImageIFD.Make,
+        piexif.ImageIFD.Artist,
+        piexif.ImageIFD.ImageDescription,
+    )
+    out = bytearray(data)
+    blanked = 0
+    for header in _TIFF_HEADERS:
+        pos = data.find(header)
+        while pos != -1:
+            window = bytes(out[pos : pos + _EXIF_WINDOW])
+            ifd: dict[int, Any] = {}
+            try:
+                ifd = piexif.load(window).get("0th", {})
+            except Exception:
+                ifd = {}
+            for tag in ai_tags:
+                value = ifd.get(tag)
+                if not isinstance(value, bytes):
+                    continue
+                if any(token in value.decode("latin1", "replace").lower() for token in AI_GENERATOR_TOKENS):
+                    # Blank the value bytes in place, within this EXIF block only.
+                    vpos = out.find(value, pos, pos + _EXIF_WINDOW)
+                    if vpos != -1:
+                        out[vpos : vpos + len(value)] = b" " * len(value)
+                        blanked += 1
+            pos = data.find(header, pos + len(header))
+    return bytes(out), blanked

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 
@@ -124,6 +125,24 @@ class TestHasAiMetadata:
         from remove_ai_watermarks.metadata import has_ai_metadata
 
         assert not has_ai_metadata(out)
+
+    def test_remove_ai_metadata_blanks_exif_token_item_in_avif(self, tmp_path: Path):
+        """End-to-end: ``remove_ai_metadata`` blanks an AI-generator EXIF token
+        stored as a meta-box Exif item (bytes in mdat) without re-encoding."""
+        from remove_ai_watermarks.metadata import remove_ai_metadata
+
+        ftyp = b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00avifmif1"
+        blob = piexif.dump({"0th": {piexif.ImageIFD.Software: b"Midjourney", piexif.ImageIFD.Make: b"NIKON"}})
+        mdat = struct.pack(">I", 8 + len(blob)) + b"mdat" + blob
+        src = tmp_path / "in.avif"
+        src.write_bytes(ftyp + mdat)
+
+        out = tmp_path / "out.avif"
+        remove_ai_metadata(src, out)
+        cleaned = out.read_bytes()
+        assert len(cleaned) == len(ftyp + mdat)  # in place, no re-encode
+        assert b"Midjourney" not in cleaned  # AI token gone
+        assert b"NIKON" in cleaned  # camera tag preserved
 
     def test_detects_iptc_trained_algorithmic_media_marker(self, tmp_path: Path):
         """Some pipelines embed only the IPTC AI marker in XMP, no C2PA manifest."""
