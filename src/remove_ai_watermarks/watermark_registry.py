@@ -90,13 +90,27 @@ class KnownMark:
         return self._remove(image, inpaint_method, inpaint, inpaint_strength, force)
 
 
-# Gemini-sparkle confidence above which the registry treats it as a confident
-# detection for arbitration. Matches identify's corpus-validated sparkle
-# threshold (0.5): the gemini engine's own detect flag uses a looser internal
-# threshold and weakly fires (~0.36) on unrelated bottom-right text (e.g. the
-# Doubao mark), which would otherwise let it hijack `--mark auto`. 0.5 gives 0
-# false positives on the corpus.
-_GEMINI_AUTO_MIN_CONF = 0.5
+# Single source of truth for the Gemini-sparkle "trust this as a real mark"
+# confidence, shared by BOTH the removal arbitration here (`best_auto_mark` /
+# `_gemini_detect`) and the provenance detector in `identify` (which imports it
+# as its sparkle threshold). Defining it once removes the detect-vs-remove
+# threshold drift the retained-corpus mining surfaced (2026-06-20): identify
+# would report a sparkle while removal declined it, or vice versa, whenever the
+# two independently-maintained 0.5 constants fell out of step. Now they cannot.
+#
+# Value 0.5 is corpus-validated: the gemini engine's own `detected` flag uses a
+# looser internal threshold (0.35) and weakly fires (~0.36-0.42) on unrelated
+# bottom-right text -- a real Doubao mark scores ~0.40-0.42 as a gemini match,
+# and its core-ring brightness margin is HIGHER than a genuine faint sparkle's,
+# so neither confidence nor the brightness gate separates them in the [0.35, 0.5)
+# band. Lowering this gate to recover faint sparkles was evaluated against that
+# band (2026-06-20) and REJECTED: it cannot be done without re-admitting the
+# Doubao-text / content false positives, trading a rare miss for false-positive
+# removals on clean images. The band below the gate is therefore intentionally
+# left to the higher-strength / metadata paths. 0.5 gives 0 false positives on
+# the corpus.
+GEMINI_SPARKLE_TRUST_CONF = 0.5
+_GEMINI_AUTO_MIN_CONF = GEMINI_SPARKLE_TRUST_CONF
 
 # ── Engine adapters (lazy singletons; engines are cv2-only, no model load) ──
 

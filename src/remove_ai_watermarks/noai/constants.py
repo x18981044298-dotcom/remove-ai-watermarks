@@ -122,6 +122,20 @@ C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
     C2paAiVendor(
         b"volcengine", "ByteDance (Volcano Engine)", "ByteDance (Doubao / Jimeng / Volcano Engine)", "ByteDance"
     ),
+    # Some Volcano Engine certs name the signer with the Chinese legal entity
+    # "北京火山引擎科技有限公司" (Beijing Volcano Engine Technology Co., Ltd.) rather
+    # than the latin "volcengine" -- the latin needle misses it entirely, so real
+    # ByteDance output was un-attributed in production traffic. The issuer is the
+    # UTF-8 of the Chinese name (it appears UTF-8-encoded in the manifest-store
+    # JSON and the raw caBX bytes alike); it normalizes to the same "ByteDance"
+    # needle and platform as the volcengine row, so the two collapse together for
+    # clash detection. Verified against the mined retained corpus, 2026-06-20.
+    C2paAiVendor(
+        "北京火山引擎科技有限公司".encode(),
+        "ByteDance (Volcano Engine)",
+        "ByteDance (Doubao / Jimeng / Volcano Engine)",
+        "ByteDance",
+    ),
     # ByteDance's international brand (BytePlus / Seedream / Seededit) signs its
     # cert as "Byteplus Pte. Ltd." -- the bare ``volcengine`` needle misses it, so
     # real BytePlus AI output was mis-attributed (an incidental "Adobe XMP" string
@@ -136,10 +150,28 @@ C2PA_AI_VENDORS: tuple[C2paAiVendor, ...] = (
     # source read AI but no platform was attributed. Verified on real signed files
     # in production traffic, 2026-06-19. Canva does not use SynthID.
     C2paAiVendor(b"Canva", "Canva", "Canva (Magic Media)", "Canva"),
+    # ElevenLabs is a pure generative-AI company (AI voice / audio, and image /
+    # video via its API); it signs output as "Eleven Labs Inc.", so the C2PA
+    # manifest alone marks AI generation. Verified against the mined retained
+    # corpus, 2026-06-20. ElevenLabs does not use SynthID.
+    C2paAiVendor(b"Eleven Labs", "ElevenLabs", "ElevenLabs", "ElevenLabs"),
     # Truepic is a C2PA signing authority, not an AI generator: no platform label,
     # never asserts is_ai (the verdict comes from the digital-source-type).
     C2paAiVendor(b"Truepic", "Truepic", None, None),
 )
+
+# Deliberately NOT registered as AI-generation vendors (mined-corpus candidates
+# evaluated 2026-06-20):
+#   - TikTok Inc.: signs C2PA as a content-provenance / AI-labeling authority on
+#     uploads, not as an image generator. The is_ai verdict keys off the
+#     digitalSourceType (trainedAlgorithmicMedia), which is already honored; a
+#     bare TikTok signer marks distribution provenance, not generation, so adding
+#     it as a generator needle would mis-label human uploads as AI.
+#   - PixelBin.io (issuer "Fynd"): an image transformation / optimization / CDN
+#     service. Its C2PA stamps a transform/upload step, not a generation event.
+#   Both are excluded to avoid false-positive AI attribution; re-evaluate only
+#   against a real signed file whose manifest carries a trainedAlgorithmicMedia
+#   digital-source type produced by the vendor itself.
 
 # Derived view -- add a vendor to C2PA_AI_VENDORS above, not here.
 # C2PA issuer signature -> resolved org name, for the manifest byte-scan.

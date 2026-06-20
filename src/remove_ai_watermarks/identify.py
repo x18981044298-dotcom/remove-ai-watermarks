@@ -42,6 +42,7 @@ from remove_ai_watermarks.metadata import (
 )
 from remove_ai_watermarks.noai.c2pa import cbor_text_after, extract_c2pa_info, soft_binding_vendors_in
 from remove_ai_watermarks.noai.constants import C2PA_AI_TOOLS, C2PA_AI_VENDORS, C2PA_ISSUERS
+from remove_ai_watermarks.watermark_registry import GEMINI_SPARKLE_TRUST_CONF
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -57,11 +58,14 @@ log = logging.getLogger(__name__)
 _SCAN_BYTES = 1024 * 1024
 
 # Visible-sparkle confidence above which the signal is trusted as provenance.
-# Stricter than the removal default (0.25): on the corpus, Gemini-family
-# sparkles score >= 0.56 while non-sparkle images top out at 0.49, so 0.5
-# cleanly separates them and avoids false positives when sparkle is the only
-# signal (e.g. an OpenAI image scored 0.37 -- below threshold, correctly dropped).
-_SPARKLE_THRESHOLD = 0.5
+# Shared with the removal arbitration (watermark_registry.GEMINI_SPARKLE_TRUST_CONF)
+# so the provenance "is there a sparkle" verdict and the removal "take the sparkle"
+# decision can never drift apart -- the detect-vs-remove desync the retained-corpus
+# mining surfaced (2026-06-20). On the corpus Gemini-family sparkles score >= 0.56
+# while non-sparkle images top out at 0.49, so 0.5 cleanly separates them and avoids
+# false positives when the sparkle is the only signal (e.g. an OpenAI image scored
+# 0.37 -- below threshold, correctly dropped).
+_SPARKLE_THRESHOLD = GEMINI_SPARKLE_TRUST_CONF
 
 # Issuer (C2PA signer) -> human-readable generating platform, derived from the
 # single C2PA_AI_VENDORS registry. Ordered: when a manifest names several issuers
@@ -132,6 +136,14 @@ class ProvenanceReport:
     is_ai_generated: bool | None  # True / False is never asserted; None = unknown
     platform: str | None
     confidence: str  # "high" | "medium" | "none"
+    # Coarse AI-origin kind from the C2PA digital-source-type, so a caller can
+    # branch on full generation vs an AI-touched real photo:
+    #   "generated" -- digitalSourceType trainedAlgorithmicMedia (fully AI).
+    #   "enhanced"  -- compositeWithTrainedAlgorithmicMedia (real content with an
+    #                  AI-composited region; scrub the AI region, keep the photo).
+    #   None        -- no C2PA AI source-type (verdict, if AI, came from another
+    #                  signal: IPTC, AIGC, local gen params, xAI, ...).
+    ai_source_kind: str | None = None
     watermarks: list[str] = field(default_factory=list[str])
     signals: list[Signal] = field(default_factory=list["Signal"])
     caveats: list[str] = field(default_factory=list[str])
@@ -484,9 +496,18 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
     # ── C2PA Content Credentials ────────────────────────────────────
     has_c2pa = bool(info) or c2pa_marker_in(head)
     issuers = [info["issuer"]] if info.get("issuer") else _issuers_in(head)
-    c2pa_is_ai = "trainedAlgorithmicMedia" in info.get("source_type", "") or any(
-        m in head for m in (b"trainedAlgorithmicMedia", b"compositeWithTrainedAlgorithmicMedia")
-    )
+    # Full AI generation (trainedAlgorithmicMedia) vs an AI-enhanced real photo
+    # (compositeWithTrainedAlgorithmicMedia). The structured kind is parsed once in
+    # noai.c2pa._populate_registry_fields (covers PNG + any container the c2pa-python
+    # reader handles); fall back to a raw head scan for the non-PNG raw-blob path
+    # where extract_c2pa_info returns {}. Full generation wins when both appear.
+    c2pa_source_kind = info.get("ai_source_kind")
+    if c2pa_source_kind is None:
+        if b"trainedAlgorithmicMedia" in head:
+            c2pa_source_kind = "generated"
+        elif b"compositeWithTrainedAlgorithmicMedia" in head:
+            c2pa_source_kind = "enhanced"
+    c2pa_is_ai = c2pa_source_kind is not None
     # Generator string (for the signal detail): structured for PNG, CBOR-scanned
     # for other containers. Best-effort -- some manifests key it as
     # `claim_generator_info` (Pixel), so this can be None even when a device is
@@ -734,6 +755,9 @@ def identify(image_path: Path, *, check_visible: bool = True, check_invisible: b
         is_ai_generated=is_ai,
         platform=platform,
         confidence=confidence,
+        # Only meaningful when the AI verdict actually came from the C2PA source
+        # type; a non-C2PA AI signal (IPTC/AIGC/local gen) leaves it None.
+        ai_source_kind=c2pa_source_kind if (is_ai and has_c2pa) else None,
         watermarks=watermarks,
         signals=signals,
         caveats=caveats,

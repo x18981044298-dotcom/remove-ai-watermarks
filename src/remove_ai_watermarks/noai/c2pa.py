@@ -363,14 +363,22 @@ def _populate_registry_fields(buf: bytes, c2pa_info: dict[str, Any]) -> bool:
     # Digital source type (matched anywhere in the store, including ingredient
     # manifests -- a ChatGPT edit of a Sora generation carries the AI marker on
     # the parent, not the active manifest).
+    # ``ai_source_kind`` is the structured generated-vs-enhanced split the caller
+    # branches on (full-frame scrub vs region-targeted clean); ``source_type`` is the
+    # human-readable form. The two byte strings are unambiguous:
+    # "compositeWithTrainedAlgorithmicMedia" capitalizes the inner "Trained", so a
+    # lowercase "trainedAlgorithmicMedia" match is standalone full generation, which
+    # wins when both appear (an edit chain).
     ai_source = False
     if b"trainedAlgorithmicMedia" in buf:
         c2pa_info["source_type"] = "trainedAlgorithmicMedia (AI-generated)"
+        c2pa_info["ai_source_kind"] = "generated"
         ai_source = True
     elif b"algorithmicMedia" in buf:
         c2pa_info["source_type"] = "algorithmicMedia"
     elif b"compositeWithTrainedAlgorithmicMedia" in buf:
         c2pa_info["source_type"] = "compositeWithTrainedAlgorithmicMedia (AI-enhanced)"
+        c2pa_info["ai_source_kind"] = "enhanced"
         ai_source = True
 
     # SynthID pixel-watermark proxy: a C2PA manifest from a SynthID-using

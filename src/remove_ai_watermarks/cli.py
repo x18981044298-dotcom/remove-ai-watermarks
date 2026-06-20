@@ -881,6 +881,13 @@ def cmd_identify(ctx: click.Context, source: Path, no_visible: bool, as_json: bo
 
     _banner()
     verdict = {True: "AI-generated", False: "not AI", None: "unknown"}[report.is_ai_generated]
+    # Sharpen the True verdict when the C2PA source type says the image is a real
+    # photo with an AI-composited region rather than a full AI generation, so the
+    # caller (and the user) can tell "scrub the whole frame" from "scrub the AI region".
+    if report.is_ai_generated and report.ai_source_kind == "enhanced":
+        verdict = "AI-enhanced (real content with an AI-composited region)"
+    elif report.is_ai_generated and report.ai_source_kind == "generated":
+        verdict = "AI-generated (fully synthetic)"
     console.print(f"\n  Verdict: {verdict}  (confidence: {report.confidence})")
     console.print(f"  Platform: {report.platform or 'undetermined'}")
 
