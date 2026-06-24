@@ -185,6 +185,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["G004", "S108", "S310", "T20"]
 "tests/*.py" = ["ANN", "S101", "S105", "S106", "S108"]
 "src/remove_ai_watermarks/noai/watermark_remover.py" = ["S603", "S606", "S607", "T201"]  # subprocess calls for auto-install/CUDA fix
 "src/remove_ai_watermarks/noai/c2pa.py" = ["S110"]  # try-except-pass for corrupt file handling
