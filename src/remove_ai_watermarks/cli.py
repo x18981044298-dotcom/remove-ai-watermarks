@@ -340,10 +340,12 @@ def _warn_if_esrgan_unavailable(upscaler: str) -> None:
 
 
 def _aigc_metadata_present(path: Path) -> bool:
-    """True when the file carries a China-AIGC (TC260) metadata label. Used to gate
-    the weak-detector 'AI生成' pill: metadata confirms Jimeng-class provenance. NB
-    this is only ONE of two confirmations -- ``remove_auto_marks`` also accepts the
-    bottom-right wordmark, so a metadata-STRIPPED upload can still be handled."""
+    """True when the file carries a China-AIGC (TC260) metadata label. Feeds the
+    weak-detector 'AI生成' pill gate (``remove_auto_marks`` → ``_keep_pill``): metadata
+    confirms Jimeng-class provenance but not pill presence, so the metadata-only arm
+    removes the pill ONLY on a flat, safe-to-inpaint footprint. The reliable
+    bottom-right wordmark is the other, unrestricted confirmation arm (and it survives
+    a metadata-STRIPPED upload)."""
     with contextlib.suppress(Exception):
         from remove_ai_watermarks import metadata
 

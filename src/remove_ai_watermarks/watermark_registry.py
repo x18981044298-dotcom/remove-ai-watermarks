@@ -344,6 +344,31 @@ def best_auto_mark(image: NDArray[Any]) -> MarkDetection | None:
     return max(fired, key=lambda d: d.confidence) if fired else None
 
 
+def _keep_pill(image: NDArray[Any], keys: set[str], *, pill_metadata: bool) -> bool:
+    """Whether to auto-remove the capture-less 'AI生成' pill given the fired marks.
+
+    The pill detector is weak (~7% raw false-fire) and metadata confirms the platform,
+    not pill presence, so a naive metadata-OR-wordmark gate over-fires: on a 32k
+    real-upload corpus (2026-07) the metadata-only arm was only ~27% precise and its
+    false fires were textured ceilings/walls that inpaint visibly SMEARS. Two arms:
+      * bottom-right "★ 即梦AI" wordmark fired -> ~94% precise, and it survives
+        metadata-STRIPPED uploads: remove the pill unrestricted;
+      * metadata only (TC260 AIGC, no wordmark) -> remove ONLY when the top-left
+        footprint is flat enough for an invisible inpaint (``footprint_is_flat``),
+        so real flat-scene pills (and harmless flat false fires) are cleaned while
+        the damaging textured false fires are left untouched.
+    A Doubao image is TC260 too but is not Jimeng-basic, so the pill never rides on a
+    Doubao detection. No confirmation at all -> never remove (blocks false fires on
+    non-Jimeng content)."""
+    if "doubao" in keys:
+        return False
+    if "jimeng" in keys:
+        return True
+    if pill_metadata:
+        return bool(_engine("jimeng_pill").footprint_is_flat(image))
+    return False
+
+
 def remove_auto_marks(
     image: NDArray[Any],
     *,
@@ -362,16 +387,12 @@ def remove_auto_marks(
     its own corner on the progressively-cleaned image, so order does not matter.
 
     The capture-less ``jimeng_pill`` has a weak edge-NCC detector (~7% raw
-    false-fire), so it is kept only when the image is CONFIRMED Jimeng and NOT
-    Doubao. Confirmation is ``pill_metadata`` (the China-AIGC / TC260 metadata
-    signal, supplied by the caller) OR the reliable bottom-right wordmark firing --
-    the wordmark keeps recall on metadata-STRIPPED uploads (screenshots / re-saved
-    files) that the metadata gate alone would miss. Returns ``(result, [labels
-    removed])``; an empty list means nothing fired."""
+    false-fire), so its removal is gated by ``_keep_pill`` (Jimeng-class confirmation
+    + a safe-inpaint check on the metadata-only arm; see that helper). Returns
+    ``(result, [labels removed])``; an empty list means nothing fired."""
     fired = [d for d in detect_marks(image, include_explicit=False) if d.detected]
     keys = {d.key for d in fired}
-    jimeng_confirmed = pill_metadata or "jimeng" in keys
-    if "jimeng_pill" in keys and (not jimeng_confirmed or "doubao" in keys):
+    if "jimeng_pill" in keys and not _keep_pill(image, keys, pill_metadata=pill_metadata):
         fired = [d for d in fired if d.key != "jimeng_pill"]
     result = image
     for det in fired:

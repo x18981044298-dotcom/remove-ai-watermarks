@@ -56,6 +56,17 @@ class TestPillDetect:
         assert not PillEngine().detect(np.full((40, 40, 3), 150, np.uint8)).detected
 
 
+def _textured_frame(w: int = 300, h: int = 400, bg: int = 150) -> np.ndarray:
+    """Flat frame with a high-frequency checkerboard over the top-left footprint,
+    so the pill footprint reads as TEXTURED (an inpaint there would smear)."""
+    img = np.full((h, w, 3), bg, np.uint8)
+    fx, fy, fw, fh = int(0.012 * w), int(0.006 * h), int(0.205 * w), int(0.115 * w)
+    yy, xx = np.mgrid[0:fh, 0:fw]
+    checker = (((xx // 3) + (yy // 3)) % 2 * 255).astype(np.uint8)
+    img[fy : fy + fh, fx : fx + fw] = checker[:, :, None]
+    return img
+
+
 class TestPillMask:
     def test_footprint_mask_top_left_geometry(self) -> None:
         mask = PillEngine().footprint_mask(np.full((1600, 1200, 3), 150, np.uint8))
@@ -66,6 +77,19 @@ class TestPillMask:
         # pill sits top-left: mask mass in the top-left quadrant
         assert ys.mean() < 800
         assert xs.mean() < 600
+
+
+class TestFootprintFlatness:
+    """The metadata-only pill arm removes only on a flat footprint (safe inpaint)."""
+
+    def test_flat_frame_is_flat(self) -> None:
+        assert PillEngine().footprint_is_flat(np.full((1600, 1200, 3), 150, np.uint8))
+
+    def test_textured_frame_is_not_flat(self) -> None:
+        eng = PillEngine()
+        assert not eng.footprint_is_flat(_textured_frame(1200, 1600))
+        # median-Sobel texture is well above the flat threshold on the checkerboard
+        assert eng.footprint_texture(_textured_frame(1200, 1600)) > 6.0
 
 
 class TestPillRegistry:
@@ -81,9 +105,11 @@ class TestPillRegistry:
 
 
 class TestPillGate:
-    """The pill is kept only when the image is CONFIRMED Jimeng (TC260 metadata OR
-    the bottom-right wordmark fired) and NOT Doubao. Fakes detect_marks so no image
-    content is needed; cv2 backend so nothing downloads."""
+    """Pill removal is gated (``_keep_pill``): the reliable bottom-right wordmark
+    removes it unrestricted, the metadata-only arm removes it ONLY on a flat footprint
+    (safe inpaint), Doubao/no-confirmation never remove it. Fakes detect_marks so no
+    image content is needed; cv2 backend so nothing downloads. Frame flatness matters
+    now, so tests pass a flat or a textured frame explicitly."""
 
     @staticmethod
     def _fakes(monkeypatch: pytest.MonkeyPatch, keys: set[str]) -> None:
@@ -103,15 +129,23 @@ class TestPillGate:
             ],
         )
 
-    def test_pill_kept_with_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_pill_kept_with_metadata_on_flat_footprint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # metadata-only + flat background -> safe inpaint, remove
         self._fakes(monkeypatch, {"jimeng_pill"})
         _, removed = registry.remove_auto_marks(np.full((400, 300, 3), 150, np.uint8), pill_metadata=True)
         assert "Jimeng AI生成 pill" in removed
 
-    def test_pill_kept_via_wordmark_without_metadata(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # metadata-stripped upload: the bottom-right wordmark confirms Jimeng
+    def test_pill_dropped_with_metadata_on_textured_footprint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # metadata-only + textured background (ceiling-like) -> inpaint would smear, skip
+        self._fakes(monkeypatch, {"jimeng_pill"})
+        _, removed = registry.remove_auto_marks(_textured_frame(), pill_metadata=True)
+        assert "Jimeng AI生成 pill" not in removed
+
+    def test_pill_kept_via_wordmark_ignores_texture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # wordmark confirmation (~94% precise, survives metadata stripping) is NOT
+        # texture-gated: a wordmark-confirmed pill is removed even on a textured frame
         self._fakes(monkeypatch, {"jimeng", "jimeng_pill"})
-        _, removed = registry.remove_auto_marks(np.full((400, 300, 3), 150, np.uint8), pill_metadata=False)
+        _, removed = registry.remove_auto_marks(_textured_frame(), pill_metadata=False)
         assert "Jimeng AI生成 pill" in removed
 
     def test_pill_dropped_without_metadata_or_wordmark(self, monkeypatch: pytest.MonkeyPatch) -> None:

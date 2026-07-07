@@ -51,6 +51,19 @@ _DETECT_THRESHOLD = 0.22  # edge-NCC gate, corpus-calibrated
 _MASK_X0, _MASK_Y0 = 0.012, 0.006  # x0 of W, y0 of H
 _MASK_W, _MASK_H = 0.205, 0.115  # width of W, height of W
 
+# Background-flatness gate for the metadata-only pill arm (see remove_auto_marks).
+# The pill detector is weak (~7% raw false-fire); metadata confirms the platform,
+# not pill presence, so its false fires are real Jimeng-class content WITHOUT a pill.
+# Those false fires cluster on TEXTURED top-left corners (ceiling fixtures, structure)
+# where inpaint visibly SMEARS, while real pills and harmless false fires sit on FLAT
+# corners (sky / wall / solid) where inpaint is invisible. So the metadata-only arm
+# removes the pill only when the footprint background is flat enough for a safe,
+# invisible inpaint. Threshold = median Sobel magnitude over the footprint box at a
+# normalized width; corpus-validated on 32k real uploads 2026-07 (real pills median
+# ~3.2, textured-ceiling false fires median ~8+). The reliable bottom-right wordmark
+# arm is NOT texture-gated -- a wordmark-confirmed pill is removed regardless.
+_FLAT_TEXTURE_MAX = 6.0
+
 _silhouette: NDArray[Any] | None = None
 
 
@@ -104,6 +117,38 @@ class PillEngine:
         score, box = m
         return PillDetection(score >= _DETECT_THRESHOLD, score, box)
 
+    def _footprint_box(self, image: NDArray[Any]) -> tuple[int, int, int, int] | None:
+        h, w = image.shape[:2]
+        x0, y0 = int(_MASK_X0 * w), int(_MASK_Y0 * h)
+        x1, y1 = min(w, x0 + int(_MASK_W * w)), min(h, y0 + int(_MASK_H * w))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return x0, y0, x1, y1
+
+    def footprint_texture(self, image: NDArray[Any]) -> float:
+        """Median gradient magnitude over the fixed top-left footprint box at a
+        normalized width. A robust flatness proxy: low = flat (sky / wall / solid,
+        inpaint invisible), high = textured (ceiling fixtures / structure, inpaint
+        smears). Median (not mean) so the pill's own edges -- a minority of the box --
+        do not inflate it. Backs the metadata-only arm's safe-inpaint gate."""
+        if image is None or image.size == 0:
+            return 0.0
+        box = self._footprint_box(image)
+        if box is None:
+            return 0.0
+        x0, y0, x1, y1 = box
+        crop = image[y0:y1, x0:x1]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        tw = 220
+        gray = cv2.resize(gray, (tw, max(1, int(gray.shape[0] * tw / gray.shape[1])))).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        return float(np.median(cv2.magnitude(gx, gy)))
+
+    def footprint_is_flat(self, image: NDArray[Any], *, thresh: float = _FLAT_TEXTURE_MAX) -> bool:
+        """True when the top-left footprint is flat enough for an invisible inpaint."""
+        return self.footprint_texture(image) <= thresh
+
     def footprint_mask(self, image: NDArray[Any], *, force: bool = False) -> NDArray[Any] | None:
         """Full-frame uint8 mask (255 = pill) over the pill's known top-left region.
 
@@ -116,11 +161,11 @@ class PillEngine:
         fixed regardless)."""
         if image is None or image.size == 0:
             return None
-        h, w = image.shape[:2]
-        x0, y0 = int(_MASK_X0 * w), int(_MASK_Y0 * h)
-        x1, y1 = min(w, x0 + int(_MASK_W * w)), min(h, y0 + int(_MASK_H * w))
-        if x1 <= x0 or y1 <= y0:
+        box = self._footprint_box(image)
+        if box is None:
             return None
+        x0, y0, x1, y1 = box
+        h, w = image.shape[:2]
         mask = np.zeros((h, w), np.uint8)
         mask[y0:y1, x0:x1] = 255
         return mask
