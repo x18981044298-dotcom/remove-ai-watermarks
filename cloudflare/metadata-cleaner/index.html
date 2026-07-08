@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 元数据清理</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --ink: #1d2733;
+      --muted: #687385;
+      --line: #d9dee7;
+      --accent: #246bfe;
+      --accent-dark: #164dc1;
+      --ok: #0f7b4f;
+      --bad: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    main {
+      width: min(920px, calc(100vw - 32px));
+      margin: 32px auto;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    p { margin: 0; color: var(--muted); }
+    .notice {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border: 1px solid #c8dcff;
+      border-radius: 6px;
+      background: #f2f7ff;
+      color: #173f86;
+      font-size: 14px;
+    }
+    .panel {
+      margin-top: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .drop-zone {
+      display: grid;
+      place-items: center;
+      min-height: 190px;
+      border: 1px dashed #aab4c3;
+      border-radius: 6px;
+      background: #fbfcfe;
+      text-align: center;
+      cursor: pointer;
+      padding: 24px;
+    }
+    .drop-zone:focus,
+    .drop-zone.dragging {
+      outline: 2px solid rgba(36, 107, 254, 0.25);
+      border-color: var(--accent);
+      background: #f4f8ff;
+    }
+    .drop-title { font-weight: 700; }
+    .drop-hint {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .queue,
+    .results {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #ffffff;
+    }
+    .name {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-weight: 650;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button,
+    .button {
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 16px;
+      background: var(--accent);
+      color: #ffffff;
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button:hover,
+    .button:hover { background: var(--accent-dark); }
+    button.secondary {
+      background: #e9edf5;
+      color: var(--ink);
+    }
+    button.secondary:hover { background: #dce3ef; }
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+    .badge {
+      border-radius: 999px;
+      padding: 3px 9px;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .ok { background: var(--ok); }
+    .bad { background: var(--bad); }
+    @media (max-width: 680px) {
+      main { width: min(100vw - 20px, 920px); margin: 18px auto; }
+      h1 { font-size: 23px; }
+      .panel { padding: 16px; }
+      .item { grid-template-columns: 1fr; }
+      .meta { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>AI 元数据清理</h1>
+    <p>图片只在你的浏览器本地处理，不会上传到 Cloudflare 或其他服务器。</p>
+    <div class="notice">
+      当前页面通过浏览器解码并重新导出图片来清理 C2PA、EXIF、PNG 文本块等元数据。不会运行大模型，也不会调用后端 API。
+    </div>
+
+    <section class="panel">
+      <input id="fileInput" type="file" accept="image/*" multiple>
+      <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="添加图片">
+        <div>
+          <div class="drop-title">点击选择图片，或把图片拖到这里</div>
+          <div class="drop-hint">也可以复制图片后，在这个页面按 Ctrl+V / Cmd+V 粘贴</div>
+        </div>
+      </div>
+      <div id="queue" class="queue"></div>
+      <div class="actions">
+        <button id="cleanButton" type="button">开始清理</button>
+        <button id="clearButton" class="secondary" type="button">清空</button>
+      </div>
+    </section>
+
+    <section id="results" class="results" aria-live="polite"></section>
+  </main>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const dropZone = document.getElementById("dropZone");
+    const queue = document.getElementById("queue");
+    const results = document.getElementById("results");
+    const cleanButton = document.getElementById("cleanButton");
+    const clearButton = document.getElementById("clearButton");
+    const selectedFiles = [];
+    let cleanedFiles = [];
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function fileKey(file) {
+      return `${file.name}|${file.size}|${file.lastModified}`;
+    }
+
+    function addFiles(files) {
+      const existing = new Set(selectedFiles.map(fileKey));
+      for (const file of files) {
+        if (!file || !file.type.startsWith("image/")) {
+          continue;
+        }
+        const normalized = file.name
+          ? file
+          : new File([file], `pasted-${Date.now()}-${selectedFiles.length + 1}.png`, {
+              type: file.type || "image/png"
+            });
+        const key = fileKey(normalized);
+        if (!existing.has(key)) {
+          selectedFiles.push(normalized);
+          existing.add(key);
+        }
+      }
+      renderQueue();
+    }
+
+    function renderQueue() {
+      if (!selectedFiles.length) {
+        queue.innerHTML = `<div class="meta">还没有添加图片。</div>`;
+        return;
+      }
+      queue.innerHTML = selectedFiles.map((file) => `
+        <div class="item">
+          <div class="name">${escapeHtml(file.name)}</div>
+          <div class="meta">${Math.max(1, Math.round(file.size / 1024))} KB</div>
+        </div>
+      `).join("");
+    }
+
+    function outputType(file) {
+      if (file.type === "image/jpeg" || file.type === "image/png" || file.type === "image/webp") {
+        return file.type;
+      }
+      return "image/png";
+    }
+
+    function cleanName(file, type) {
+      const suffix = type === "image/jpeg" ? ".jpg" : type === "image/webp" ? ".webp" : ".png";
+      const base = file.name.replace(/\.[^.]+$/, "") || "image";
+      return `${base}_clean${suffix}`;
+    }
+
+    async function cleanImage(file) {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext("2d", { alpha: true });
+      ctx.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      const type = outputType(file);
+      const quality = type === "image/jpeg" || type === "image/webp" ? 0.95 : undefined;
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((value) => {
+          if (value) {
+            resolve(value);
+          } else {
+            reject(new Error("导出图片失败"));
+          }
+        }, type, quality);
+      });
+      return {
+        name: cleanName(file, type),
+        blob
+      };
+    }
+
+    function downloadUrl(blob) {
+      return URL.createObjectURL(blob);
+    }
+
+    const crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+      crcTable[n] = c >>> 0;
+    }
+
+    function crc32(bytes) {
+      let crc = 0xffffffff;
+      for (const byte of bytes) {
+        crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+      }
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function writeUint16(out, value) {
+      out.push(value & 0xff, (value >>> 8) & 0xff);
+    }
+
+    function writeUint32(out, value) {
+      out.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+    }
+
+    function pushBytes(out, bytes) {
+      const chunkSize = 65536;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        out.push(...bytes.subarray(i, i + chunkSize));
+      }
+    }
+
+    async function buildZip(files) {
+      const encoder = new TextEncoder();
+      const out = [];
+      const central = [];
+      let offset = 0;
+
+      for (const file of files) {
+        const data = new Uint8Array(await file.blob.arrayBuffer());
+        const name = encoder.encode(file.name);
+        const crc = crc32(data);
+        const localOffset = offset;
+
+        writeUint32(out, 0x04034b50);
+        writeUint16(out, 20);
+        writeUint16(out, 0);
+        writeUint16(out, 0);
+        writeUint16(out, 0);
+        writeUint16(out, 0);
+        writeUint32(out, crc);
+        writeUint32(out, data.length);
+        writeUint32(out, data.length);
+        writeUint16(out, name.length);
+        writeUint16(out, 0);
+        pushBytes(out, name);
+        pushBytes(out, data);
+        offset = out.length;
+
+        writeUint32(central, 0x02014b50);
+        writeUint16(central, 20);
+        writeUint16(central, 20);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint32(central, crc);
+        writeUint32(central, data.length);
+        writeUint32(central, data.length);
+        writeUint16(central, name.length);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint16(central, 0);
+        writeUint32(central, 0);
+        writeUint32(central, localOffset);
+        pushBytes(central, name);
+      }
+
+      const centralOffset = out.length;
+      out.push(...central);
+      writeUint32(out, 0x06054b50);
+      writeUint16(out, 0);
+      writeUint16(out, 0);
+      writeUint16(out, files.length);
+      writeUint16(out, files.length);
+      writeUint32(out, central.length);
+      writeUint32(out, centralOffset);
+      writeUint16(out, 0);
+      return new Blob([new Uint8Array(out)], { type: "application/zip" });
+    }
+
+    function renderResults(items) {
+      const zipButton = items.length
+        ? `<button id="zipButton" class="secondary" type="button">下载全部 ZIP</button>`
+        : "";
+      results.innerHTML = `
+        <div class="actions">${zipButton}</div>
+        ${items.map((item) => {
+          const url = downloadUrl(item.blob);
+          return `
+            <div class="item">
+              <div>
+                <div class="name">${escapeHtml(item.name)}</div>
+                <div class="meta">已清理, ${Math.max(1, Math.round(item.blob.size / 1024))} KB</div>
+              </div>
+              <a class="button" href="${url}" download="${escapeHtml(item.name)}">下载</a>
+            </div>
+          `;
+        }).join("")}
+      `;
+      const zipButtonEl = document.getElementById("zipButton");
+      if (zipButtonEl) {
+        zipButtonEl.addEventListener("click", async () => {
+          zipButtonEl.disabled = true;
+          zipButtonEl.textContent = "打包中...";
+          const zip = await buildZip(items);
+          const url = downloadUrl(zip);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = "metadata-cleaned-images.zip";
+          link.click();
+          URL.revokeObjectURL(url);
+          zipButtonEl.disabled = false;
+          zipButtonEl.textContent = "下载全部 ZIP";
+        });
+      }
+    }
+
+    async function cleanAll() {
+      if (!selectedFiles.length) {
+        results.innerHTML = `<div class="item"><div class="name">请先添加图片</div><span class="badge bad">等待</span></div>`;
+        return;
+      }
+      cleanButton.disabled = true;
+      cleanButton.textContent = "清理中...";
+      results.innerHTML = `<div class="item"><div class="name">正在清理 ${selectedFiles.length} 张图片...</div></div>`;
+      const output = [];
+      for (const file of selectedFiles) {
+        try {
+          output.push(await cleanImage(file));
+        } catch (error) {
+          results.innerHTML += `
+            <div class="item">
+              <div class="name">${escapeHtml(file.name)}</div>
+              <span class="badge bad">${escapeHtml(error.message || error)}</span>
+            </div>
+          `;
+        }
+      }
+      cleanedFiles = output;
+      renderResults(cleanedFiles);
+      cleanButton.disabled = false;
+      cleanButton.textContent = "开始清理";
+    }
+
+    fileInput.addEventListener("change", () => {
+      addFiles(Array.from(fileInput.files || []));
+      fileInput.value = "";
+    });
+
+    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        fileInput.click();
+      }
+    });
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("dragging");
+    });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("dragging");
+      addFiles(Array.from(event.dataTransfer.files || []));
+    });
+    document.addEventListener("paste", (event) => {
+      const files = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (files.length) {
+        event.preventDefault();
+        addFiles(files);
+      }
+    });
+    cleanButton.addEventListener("click", cleanAll);
+    clearButton.addEventListener("click", () => {
+      selectedFiles.length = 0;
+      cleanedFiles = [];
+      results.innerHTML = "";
+      renderQueue();
+    });
+    renderQueue();
+  </script>
+</body>
+</html>

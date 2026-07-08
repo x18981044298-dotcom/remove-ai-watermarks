@@ -1353,11 +1353,16 @@ def _process_batch_image(
             # single CLI value, constant across the run).
             engines = ctx.obj.setdefault("_inv_engines", {})
             if pipeline not in engines:
+
+                def progress_cb(msg: str) -> None:
+                    console.print(f"  {msg}")
+
                 engines[pipeline] = InvisibleEngine(
                     model_id=model,
                     device=None if device == "auto" else device,
                     pipeline=pipeline,
                     hf_token=hf_token,
+                    progress_callback=progress_cb,
                     controlnet_conditioning_scale=controlnet_scale,
                 )
             engine_inv = engines[pipeline]
@@ -1550,6 +1555,17 @@ def cmd_batch(
             progress.advance(task)
 
     console.print(f"\n  {processed} processed" + (f"  {errors} errors" if errors else ""))
+
+
+@main.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind. Keep 127.0.0.1 for local-only use.")
+@click.option("--port", default=8765, show_default=True, type=int, help="Port for the local web UI.")
+@click.option("--open-browser/--no-open-browser", default=True, help="Open the UI in the default browser.")
+def cmd_web(host: str, port: int, open_browser: bool) -> None:
+    """Start the simple local browser UI."""
+    from remove_ai_watermarks.webui import serve
+
+    serve(host=host, port=port, open_browser=open_browser)
 
 
 if __name__ == "__main__":

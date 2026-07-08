@@ -158,6 +158,7 @@ explicit = true
 
 [project.scripts]
 remove-ai-watermarks = "remove_ai_watermarks.cli:main"
+remove-ai-watermarks-ui = "remove_ai_watermarks.webui:main"
 
 [project.urls]
 Repository = "https://github.com/wiltodelta/remove-ai-watermarks"

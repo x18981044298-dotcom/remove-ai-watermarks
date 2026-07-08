@@ -44,6 +44,25 @@ It does **not** target watermarks that protect someone else's paid or copyrighte
 | --- | --- |
 | ![Before](demo_banana_before.png) | ![After](demo_banana_after.png) |
 
+## Local browser UI
+
+For personal batch use, start the built-in local web UI:
+
+```bash
+uv run remove-ai-watermarks web
+```
+
+Then open the printed localhost URL, paste, drag, or select one or more images,
+and download each metadata-cleaned result from the page. The local UI is
+intentionally small: it listens on `127.0.0.1` by default and only strips AI
+metadata (C2PA / EXIF / PNG text chunks). It does not run the visible or
+invisible watermark model paths, so no SDXL / ControlNet weights are needed.
+You can also launch the same UI with:
+
+```bash
+uv run remove-ai-watermarks-ui
+```
+
 ## Supported models
 
 | AI model | Visible watermark | Invisible watermark | Metadata | Our approach |
